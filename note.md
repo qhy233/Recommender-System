@@ -647,4 +647,68 @@ $$P(w_t=i|U,C) = \frac{e^{v_i \cdot u}}{\sum_{j \in V} e^{v_j \cdot u}}$$
 **STAR 的优势**：
 * **参数高效**：通过参数分解（共享 + 独占），避免了为每个场景维护完整模型的资源消耗。
 * **知识迁移**：共享参数使大场景的知识能够迁移到小场景，缓解数据稀疏问题。
-* **场景差异化**：独占参数保证了每个场景的个性化表达能力。   
+* **场景差异化**：独占参数保证了每个场景的个性化表达能力。
+
+#### 5.2 动态权重建模
+
+多塔结构通过"物理隔离"的参数空间来保障场景的独特性，而动态权重建模则采用不同的思路：让模型的核心网络参数在不同场景下共享一个基础，但通过动态生成的、与场景/样本高度相关的"权重"来调制（Modulate）这些共享参数的行为。这相当于为共享网络"注入"了场景和样本的上下文信息。
+
+##### PEPNet (Parameter and Embedding Personalized Network)
+
+* **核心目标**：解决多场景多任务中的**双重跷跷板效应**。
+    * **场景跷跷板 (Domain Seesaw)**：混合训练时不同场景数据分布差异导致表征无法对齐。
+    * **任务跷跷板 (Task Seesaw)**：多任务间稀疏性与依赖关系失衡导致目标相互抑制。
+
+* **核心组件：Gate NU (门控单元)**
+    * 受语音识别领域 LHUC 模型启发，通过两层网络生成动态缩放权重：
+    $$\mathbf{x'} = \text{ReLU}(\mathbf{x} \mathbf{W_1} + \mathbf{b_1})$$
+    $$\delta = \gamma \cdot \text{Sigmoid}(\mathbf{x'} \mathbf{W_2} + \mathbf{b_2}) \quad \in [0, \gamma]$$
+    * $\mathbf{x}$：个性化先验特征（如场景 ID 或用户画像）。
+    * $\gamma$：缩放强度（经验值设为 2）。
+    * 输出 $\boldsymbol{\delta}$ 与目标参数维度对齐，通过逐元素相乘实现调制。
+
+* **EPNet：场景感知的嵌入个性化**
+    * **动机**：共享底层 Embedding 强调场景共性，忽略了不同场景下 Embedding 的差异性。
+    * **关键公式**：
+        $$\delta_{domain} = \mathcal{U}_{ep}(E(\mathcal{F}_d) \oplus (\oslash(E)))$$
+        $$O_{ep} = \delta_{domain} \otimes E$$
+    * $E(\mathcal{F}_d)$：场景先验特征的 Embedding。
+    * $\oslash(E)$：Stop Gradient 操作，防止个性化模块影响底层共享 Embedding 的学习。
+    * 通过元素级乘积得到场景个性化的 Embedding 表征。
+
+* **PPNet：用户感知的参数个性化**
+    * **动机**：解决多任务之间的跷跷板问题，实现样本粒度的个性化。
+    * **关键公式**：
+        $$O_{prior} = E(F_u) \oplus E(F_i) \oplus E(F_a)$$
+        $$\delta_{task} = \mathcal{U}_{pp}(O_{prior} \oplus (\odot(O_{ep})))$$
+    * $F_u, F_i, F_a$：用户 ID、内容 ID、作者 ID 作为个性化先验特征。
+    * **DNN 层参数个性化**：
+        $$\mathbf{O}^{(l)}_{pp} = \delta^{(l)}_{task} \otimes \mathbf{H}^{(l)}$$
+        $$\mathbf{H}^{(l+1)} = f(\mathbf{O}^{(l)}_{pp} \mathbf{W}^{(l)} + \mathbf{b}^{(l)})$$
+
+##### APG (Adaptive Parameter Generation)
+
+* **核心思想**：为不同的样本动态生成模型参数，根据样本的不同生成相应的参数，从而提升模型的容量和表达能力。
+
+* **三种样本条件表示策略**：
+    1.  **Group-wise**：适用于样本可分组的情况，将 Group 相关特征作为输入。
+    2.  **Mix-wise**：综合考虑多种因素，实现更细粒度的样本组划分（如 `<user, item>` pair 向量）。
+    3.  **Self-wise**：不需要先验知识，直接将 Deep CTR Models 的隐层输出作为参数生成的输入。
+
+* **自适应参数生成**：
+    $$\mathbf{W}_i = \text{reshape}(\text{MLP}(\mathbf{z}_i))$$
+    $$y_i = \sigma(\mathbf{W}_i \mathbf{x}_i)$$
+
+* **工程优化：低秩参数分解**
+    * **动机**：直接生成完整参数矩阵计算和存储开销大。
+    * **解决方案**：将参数矩阵分解为三个子矩阵相乘：
+        $$\mathbf{U}_i, \mathbf{S}_i, \mathbf{V}_i = \text{reshape}(\text{MLP}(\mathbf{z}_i))$$
+        $$y_i = \sigma(\mathbf{U}_i (\mathbf{S}_i (\mathbf{V}_i \mathbf{x}_i)))$$
+    * 通过设置较小的秩值控制开销，分解前向计算避免子矩阵乘操作。
+
+* **参数共享与过参数化**：
+    * 将参数矩阵分为**私有参数**（刻画样本特性）和**共享参数**（刻画样本共性）。
+    * 共享参数用两个大矩阵替代，增加参数数量提升模型容量，同时具有隐含正则效果：
+        $$\mathbf{S}_{i}=\text{reshape}(\text{MLP}(\mathbf{z}_{i}))$$
+        $$\mathbf{U} = \mathbf{U}^l \mathbf{U}^r, \mathbf{V} = \mathbf{V}^l \mathbf{V}^r$$
+        $$y_{i}=\sigma(\mathbf{U}(\mathbf{S}_{i}\mathbf{V}\mathbf{x}_{i}))$$
