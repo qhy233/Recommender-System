@@ -1,0 +1,1430 @@
+Reinforcement Learning for Slate-based Recommender
+Systems: A Tractable Decomposition and Practical
+Methodology*
+Eugene Iey;z;1, Vihan Jainz;1, Jing Wangz;1, Sanmit Narvekarx;2, Ritesh Agarwal1,
+Rui Wu1, Heng-Tze Cheng1, Morgane Lustman3, Vince Gatto3, Paul Covington3,
+Jim McFadden3, Tushar Chandra1, and Craig Boutiliery;1
+1Google Research
+2Department of Computer Science, University of Texas at Austin
+3YouTube, LLC
+June 3, 2019
+Abstract
+Most practical recommender systems focus on estimating immediate user engage-
+ment without considering the long-term effects of recommendations on user behavior.
+Reinforcement learning (RL) methods offer the potential to optimize recommendations
+for long-term user engagement. However, since users are often presented with slates
+of multiple items—which may have interacting effects on user choice—methods are
+required to deal with the combinatorics of the RL action space. In this work, we address
+the challenge of making slate-based recommendations to optimize long-term value
+using RL. Our contributions are three-fold. (i) We develop SLATE Q, a decomposition
+of value-based temporal-difference and Q-learning that renders RL tractable with slates.
+Under mild assumptions on user choice behavior, we show that the long-term value
+(LTV) of a slate can be decomposed into a tractable function of its component item-wise
+LTVs. (ii) We outline a methodology that leverages existing myopic learning-based rec-
+ommenders to quickly develop a recommender that handles LTV . (iii) We demonstrate
+our methods in simulation, and validate the scalability of decomposed TD-learning
+using S LATE Q in live experiments on YouTube.
+*Parts of this paper appeared in [Ie et al., 2019].
+†Corresponding authors: feugeneie,cboutilierg@google.com.
+‡Authors Contributed Equally.
+§Work done while at Google Research.
+1arXiv:1905.12767v2  [cs.LG]  31 May 20191 Introduction
+Recommender systems have become ubiquitous, transforming user interactions with products,
+services and content in a wide variety of domains. In content recommendation, recommenders
+generally surface relevant and/or novel personalized content based on learned models of
+user preferences (e.g., as in collaborative ﬁltering [Breese et al., 1998, Konstan et al., 1997,
+Srebro et al., 2004, Salakhutdinov and Mnih, 2007]) or predictive models of user responses
+to speciﬁc recommendations. Well-known applications of recommender systems include
+video recommendations on YouTube [Covington et al., 2016], movie recommendations on
+Netﬂix [Gomez-Uribe and Hunt, 2016] and playlist construction on Spotify [Jacobson et al.,
+2016]. It is increasingly common to train deep neural networks (DNNs) [van den Oord et al.,
+2013, Wang et al., 2015, Covington et al., 2016, Cheng et al., 2016] to predict user responses
+(e.g., click-through rates, content engagement, ratings, likes) to generate, score and serve
+candidate recommendations.
+Practical recommender systems largely focus on myopic prediction—estimating a user’s
+immediate response to a recommendation—without considering the long-term impact on
+subsequent user behavior. This can be limiting: modeling a recommendation’s stochastic
+impact on the future affords opportunities to trade off user engagement in the near-term for
+longer-term beneﬁt (e.g., by probing a user’s interests, or improving satisfaction). As a result,
+research has increasingly turned to the sequential nature of user behavior using temporal
+models, such as hidden Markov models and recurrent neural networks [Rendle et al., 2010,
+Campos et al., 2014, He and McAuley, 2016, Sahoo et al., 2012, Tan et al., 2016, Wu et al.,
+2017], and long-term planning using reinforcement learning (RL) techniques (e.g., [Shani
+et al., 2005, Taghipour et al., 2007, Gauci et al., 2018]). However, the application of RL has
+largely been conﬁned to restricted domains due to the complexities of putting such models
+into practice at scale.
+In this work, we focus on the use of RL to maximize long-term value (LTV) of recommen-
+dations to the user, speciﬁcally, long-term user engagement. We address two key challenges
+facing the deployment of RL in practical recommender systems, the ﬁrst algorithmic and the
+second methodological.
+Our ﬁrst contribution focuses on the algorithmic challenge of slate recommendation
+in RL. One challenge in many recommender systems is that, rather than a single item,
+multiple items are recommended to a user simultaneously; that is, users are presented with a
+slate of recommended items. This induces a RL problem with a large combinatorial action
+space, which in turn imposes signiﬁcant demands on exploration, generalization and action
+optimization. Recent approaches to RL with such combinatorial actions [Sunehag et al.,
+2015, Metz et al., 2017] make inroads into this problem, but are unable to scale to problems
+of the size encountered in large, real-world recommender systems, in part because of their
+generality. In this work, we develop a new slate decomposition technique called SLATE Qthat
+estimates the long-term value (LTV) of a slate of items by directly using the estimated LTV
+of the individual items on the slate . This decomposition exploits certain assumptions about
+the speciﬁcs of user choice behavior—i.e., the process by which user preferences dictate
+2selection and/or engagement with items on a slate—but these assumptions are minimal and,
+we argue below, very natural in many recommender settings.
+More concretely, we ﬁrst show how the SLATE Qdecomposition can be incorporated
+intotemporal difference (TD) learning algorithms, such as SARSA and Q-learning, so that
+LTVs can be learned at the level of individual items despite the fact that items are always
+presented to users in slates. This is critical for both generalization and exploration efﬁciency.
+We then turn to the optimization problem required to build slates that maximize LTV , a
+necessary component of policy improvement (e.g., in Q-learning) at training time and for
+selecting optimal slates at serving time. Despite the combinatorial (and fractional) nature of
+the underlying optimization problem, we show that it can be solved in polynomial-time by
+a two-step reduction to a linear program (LP). We also show that simple top- kand greedy
+approximations, while having no theoretical guarantees in this formulation, work well in
+practice.
+Our second contribution is methodological. Despite the recent successes of RL afforded
+by deep Q-networks (DQNs) [Mnih et al., 2015, Silver et al., 2016], the deployment of RL
+in practical recommenders is hampered by the need to construct relevant state and action
+features for DQN models, and to train models that serve millions-to-billions of users. In this
+work, we develop a methodology that allows one to exploit existing myopic recommenders
+to: (a) accelerate RL model development; (b) reuse existing training infrastructure to a great
+degree; and (c) reuse the same serving infrastructure for scoring items based on their LTV .
+Speciﬁcally, we show how temporal difference (TD) learning can be built on top of existing
+myopic pipelines to allow the training and serving of DQNs.
+Finally, we demonstrate our approach with both ofﬂine simulation experiments and
+online live experiments on the YouTube video recommendation system. We show that our
+techniques are scalable and offer signiﬁcant improvements in user engagement over myopic
+recommendations. The live experiment also demonstrates how our methodology supports
+the relatively straightforward deployment of TD and RL methods that build on the learning
+infrastructure of extant myopic systems.
+The remainder of the paper is organized as follows. In Section 2, we brieﬂy discuss
+related work on the use of RL for recommender systems, choice modeling, and RL with
+combinatorial action spaces. We formulate the LTV slate recommendation problem as a
+Markov decision process (MDP) in Section 3 and brieﬂy discuss standard value-based RL
+techniques, in particular, SARSA and Q-learning.
+We introduce our SLATE Qdecomposition in Section 4, discussing the assumptions under
+which the decomposition is valid, and how it supports effective TD-learning by allowing the
+long-term value (Q-value) of a slate to be decomposed into a function of its constituent item-
+level LTVs (Q-values). We pay special attention to the form of the user choice model , i.e., the
+random process by which a user’s preferences determine the selection of an item from a slate.
+The decomposition affords item-level exploration and generalization for TD methods like
+SARSA and Q-learning, thus obviating the need to construct value or Q-functions explicitly
+over slates. For Q-learning itself to be feasible, we must also solve the combinatorial slate
+optimization problem —ﬁnding a slate with maximum LTV given the Q-values of individual
+3items. We address this problem in Section 5, showing that it can be solved effectively by ﬁrst
+developing a fractional mixed-integer programming formulation for slate optimization, then
+deriving a reformulation and relaxation that allows the problem to be solved exactly as a
+linear program. We also describe two simple heuristics, top-kandgreedy slate construction,
+that have no theoretical guarantees, but perform well in practice.
+To evaluate these methods systematically, we introduce a recommender simulation
+environment, RecSim , in Section 6 that allows the straightforward conﬁguration of an item
+collection (or vocabulary), a user (latent) state model and a user choice model. We describe
+speciﬁc instantiations of this environment suitable for slate recommendation, and in Section 7
+we use these models in the empirical evaluation of our SLATE Qlearning and optimization
+techniques.
+The practical application of RL in the estimation of LTV in large-scale, practical recom-
+mender systems often requires integration of RL methods with production machine-learning
+training and serving infrastructure. In Section 8, we outline a general methodology by which
+RL methods like SLATE Qcan be readily incorporated into the typical infrastructure used by
+many myopic recommender systems. We use this methodology to test the SLATE Qapproach,
+speciﬁcally using SARSA to get one-step policy improvements, in a live experiment for
+recommendations on the YouTube homepage. We discuss the results of this experiment in
+Section 9.
+2 Related Work
+We brieﬂy review select related work in recommender systems, choice modeling and combi-
+natorial action optimization in RL.
+Recommender Systems Recommender systems have typically relied on collaborative
+ﬁltering (CF) techniques [Konstan et al., 1997, Breese et al., 1998]. These exploit user
+feedback on a subset of items (either explicit, e.g., ratings, or implicit, e.g., consumption)
+to directly estimate user preferences for unseen items. CF techniques include methods
+that explicitly cluster users and/or items, methods that embed users and items in a low-
+dimensional representation (e.g., LSA, probabilistic matrix factorization), or combinations
+of the two [Krestel et al., 2009, Moshfeghi et al., 2011].
+Increasingly, recommender systems have moved beyond explicit preference prediction
+to capture more nuanced aspects of user behavior, for instance, how they respond to speciﬁc
+recommendations, such as pCTR (predicted click-through rate), degree of engagement
+(e.g., dwell/watch/listen time), ratings, social behavior (e.g., comments, sharing) and other
+behaviors of interest. DNNs now play a signiﬁcant role in such approaches [van den Oord
+et al., 2013, Wang et al., 2015, Covington et al., 2016, Cheng et al., 2016] and often use
+CF-inspired embeddings of users and items as inputs to the DNN itself.
+Sequence Models and RL in Recommender Systems Attempts to formulate recommen-
+dation as a RL problem have been relatively uncommon, though it has attracted more
+4attention recently. Early models included a MDP model for shopping recommendation
+[Shani et al., 2005] and Q-learning for page navigation [Taghipour et al., 2007], but were
+limited to very small-scale settings (100s of items, few thousands of users). More recently,
+biclustering has been combined with RL algorithms for recommendation [Choi et al., 2018],
+while Gauci et al. [2018] describe the use of RL in several applications at Facebook. Chen
+et al. [2018] also explored a novel off-policy policy-gradient approach that is very scalable,
+and was shown to be effective in a large-scale commercial recommender system. Their
+approach does not explicitly compute LTV improvements (as we do by developing Q-value
+models), nor does it model the slate effects that arise is practical recommendations.
+Zhao et al. [2018] explicitly consider RL in slate-based recommendation systems, devel-
+oping an actor-critic approach for recommending a page of items and tested using simulator
+trained on user logs. While similar in motivation to our approach, this method differs in
+several important dimensions: it makes no signiﬁcant structural assumptions about user
+choice, using a CNN to model the spatial layout of items on a page, thus not handling the
+action-space combinatorics w.r.t. generalization, exploration, or optimization (but allowing
+additional ﬂexibility in capturing user behavior). Finally, the focus of their method is online
+training and their evaluation with ofﬂine data is limited to item reranking.
+Slate Recommendation and Choice Modeling Accounting for slates of items in recom-
+mender systems is quite common [Deshpande and Karypis, 2004, Boutilier et al., 2003,
+Viappiani and Boutilier, 2010, Le and Lauw, 2017], and the extension introduces interesting
+modeling questions (e.g., involving metrics such as diversity [Wilhelm et al., 2018]) and
+computational issues due to the combinatorics of slates themselves. Swaminathan et al.
+[2017] explored off-policy evaluation and optimization using inverse propensity scores in
+the context of slate interactions. Mehrotra et al. [2019] developed a hierarchical model for
+understanding user satisfaction in slate recommendation.
+The construction of optimal recommendation slates generally depends on user choice
+behavior . Models of user choice from sets of items is studied under the banner of choice
+modeling in areas of econometrics, psychology, statistics, operations research and marketing
+and decision science [Luce, 1959, Louviere et al., 2000]. Probably the most common model
+of user choice is the multinomial logit (MNL) model and its extensions (e.g., the conditional
+logit model, the mixed logit model, etc.)—we refer to Louviere et al. [2000] for an overview.
+For example, the conditional logit model assumes a set of user-item characteristics (e.g.,
+feature vector) xijfor useriand itemj, and determines the (random) utility u(xij)of the
+item for the user. Typically, this model is linear so u(xij) =xij, though we consider the
+use of DNN regressors to estimate these logits below. The probability of the user selecting j
+from a slate Aof items is
+P(jjA) =eu(xij)
+P
+`2Aeu(xi`)(1)
+The choice model is justiﬁed under speciﬁc independence and extreme value assumptions
+[McFadden, 1974, Train, 2009]. Various forms of such models are used to model consumer
+choice and user behavior in wide ranging domains, together with speciﬁc methods for model
+5estimation, experiment design and optimization. Such models form the basis of optimization
+procedures in revenue management [Talluri and van Ryzin, 2004, Rusmevichientong and
+Topaloglu, 2012], product line design [Chen and Hausman, 2000, Sch ¨on, 2010], assortment
+optimization [Mart ´ınez-de Alb ´eniz and Roels, 2011, Honhon et al., 2012] and a variety of
+other areas—we exploit connections with this work in Section 5 below.
+The conditional logit model is an instance of a more general conditional choice format in
+which a user iselects itemj2Awith unnormalized probability v(xij), for some function v:
+P(jjA) =v(xij)P
+`2Av(xi`): (2)
+In the case of the conditional logit, v(xij) =eu(xij), but any arbitrary vcan be used.
+Within the ML community, including recommender systems and learning-to-rank, other
+choice models are used to explain user choice behavior. For example, cascade models
+[Joachims, 2002, Craswell et al., 2008, Kveton et al., 2015] have proven popular as a means
+of explaining user browsing behavior through (ordered) lists of recommendations, search
+results, etc., and is especially effective at capturing position bias. The standard cascade
+model assumes that a user ihas some afﬁnity (e.g., perceived utility) uijkfor any item
+jk; sequentially scans a list of items A= (j1;j2;:::;jK)in order; and will select (e.g.,
+click) an item with probability (uijk)for some non-decreasing function . If an item is
+selected when inspected, no items following will be inspected/selected; and if the last item
+is inspected but not selected, then no selection is made. Thus the probability of jkbeing
+selected is:
+P(jkjA) =Y
+`<k(1 (uij`))(uijk): (3)
+Various mechanisms for model estimation, optimization and exploration have been proposed
+for the basic cascade model and its variations. Recently, DNN and sequence models have
+been developed for explaining user choice behavior in a more general, non-parametric
+fashion [Ai et al., 2018, Bello et al., 2018]. As one example, Jiang et al. [2019] proposed a
+slate-generation model using conditional variational autoencoders to model the distribution
+of slates conditioned on user response, but the scalability requires the use of a pre-trained
+item embedding in large domains of the type we consider. However, the CV AE model does
+offer considerably ﬂexibility in capturing item interactions, position bias, and other slate
+effects that might impact user response behavior.
+RL with Combinatorial Action Spaces Designing tractable RL approaches for combina-
+torial actions —of which slates recommendations are an example—is itself quite challenging.
+Some recent work in recommender systems considered slate-based recommendations (see,
+e.g., discussion of Zhao et al. [2018] above, though they do not directly address the com-
+binatorics), though most is more general. Sequential DQN [Metz et al., 2017] decomposes
+k-dimensional actions into a sequence of atomic actions, inserting ﬁctitious states between
+them so a standard RL method can plan a trajectory giving the optimal action conﬁguration.
+6While demonstrated to be useful in some circumstances, the approach trades off the expo-
+nential size of the action space with a corresponding exponential increase in the size of the
+state space (with ﬁctitious states corresponding to possible sequences of sub-actions).
+Sunehag et al. [2015] proposed Slate MDPs which considers slates of primitive actions ,
+using DQN to learn the value of item slates, and a greedy procedure to construct slates. In fact,
+they develop three DQN methods for the problem, two of which manage the combinatorics
+of slates by assuming the primitive actions can be executed in isolation. In our setting, this
+amounts to the unrealistic assumption that we could “force” a user to consume a speciﬁc
+item (rather than present them with a slate, from which no item might be consumed). Their
+third approach, Generic Full Slate , makes no such assumption, but maintains an explicit Q-
+function over slates of items. This means it fails to address the exploration and generalization
+problems, and while the greedy optimization (action selection) method used is tractable, it
+comes with no guarantees of optimality.
+3 An MDP Model for Slate Recommendation
+In this section, we develop a Markov decision process (MDP) model for content recommen-
+dation with slates . We consider a setting in which a recommender system is charged with
+presenting a slate to a user, from which the user selects zero or more items for consumption
+(e.g., listening to selected music tracks, reading content, watching video content). Once
+items are consumed, the user can return for additional slate recommendations or terminate
+the session. The user’s response to a consumed item may have multiple dimensions. These
+may include the immediate degree of engagement with the item (e.g., consumption time);
+ratings feedback or comments; sharing behavior; subsequent engagement with the content
+provider beyond the recommender system’s direct control. In this work, we use degree of
+engagement abstractly as the reward without loss of generality, since it can encompass a
+variety of metrics, or their combinations.
+We focus on session optimization to make the discussion concrete, but our decomposition
+applies equally well to any long-term horizon.1Session optimization with slates can be
+modeled as a MDP with states S, actionsA, reward function Rand transition kernel P, with
+discount factor 01.
+The statesStypically reﬂect user state . This includes relatively static user features such
+as demographics, declared interests, and other user attributes, as well as more dynamic user
+features, such as user context (e.g., time of day). In particular, summaries of relevant user
+history and past behavior play a key role, such as past recommendations made to the user;
+past user responses, such as recommendations accepted or passed on, the speciﬁc items
+consumed, and degree of user engagement with those items. The summarization of history is
+often domain speciﬁc (see our discussion of methodology in Section 8) and can be viewed as
+a means of capturing certain aspects of user latent state in a partially observable MDP. The
+1Dealing with very extended horizons, such as lifetime value [Theocharous et al., 2015, Hallak et al., 2017], is
+often problematic for any RL method; but such issues are independent of the slate formulation and decomposition
+we propose.
+7state may also reﬂect certain general (user-independent) environment variables. We develop
+our model assuming a ﬁnite state space for ease of exposition, though our experiments and
+our methodology admit both countably inﬁnite and continuous state features.
+The action spaceAis simply the set of all possible recommendation slates. We assume a
+ﬁxed catalog of recommendable items I, so actions are the subsets AI such thatjAj=k,
+wherekis the slate size. We assume that each item a2Iand each slate Ais recommendable
+at each state sfor ease of exposition. However, our methods apply readily when certain items
+cannot be recommended at particular states by specifying Isfor eachs2Sand restricting
+Asto subsets ofIs. If additional constraints are placed on slates so that Asis astrict subset
+of the slates deﬁned over Is, these can be incorporated into the slate optimization problem at
+both training and serving time.2We do not account for positional bias or ordering effects
+within the slate in this work, though such effects can be incorporated into the choice model
+(see below).
+To account for the fact that a user may select no item from a slate, we assume that every
+slate includes a (k+ 1) stnull item , denoted?. This is standard in most choice modeling
+work and makes it straightforward to specify all user behavior as if induced by a choice from
+the slate.
+Transition probability P(s0js;A)reﬂects the probability that the user transitions to
+states0when action Ais taken at user state s. This generally reﬂects uncertainty in both
+user response and the future contextual or environmental state. One of the most critical
+points of uncertainty pertains the probability with which a user will consume a particular
+recommended item a2Afrom the slate. As such, choice models play a critical role in
+evaluating the quality of a slate as we detail in the next section.
+Finally, the reward R(s;A)captures the expected reward of a slate, which measures the
+expected degree of user engagement with items on the slate. Naturally, this expectation must
+account for the uncertainty in user response.
+Our aim is to ﬁnd optimal slate recommendation as a function of the state. A (stationary,
+deterministic) policy :S!A dictates the action (s)to be taken (i.e., slate to recommend)
+at any states. The value function Vof a ﬁxed policy is:
+V(s) =R(s;(s)) +X
+s02SP(s0js;(s))V(s0): (4)
+The corresponding action value, or Q-function , reﬂects the value of taking an action aat
+statesand then acting according to :
+Q(s;A) =R(s;A) +X
+s02SP(s0js;A)V(s0): (5)
+Theoptimal policy maximizes expected value V(s)uniformly overS, and its value—
+2We brieﬂy describe where relevant adjustments are needed in our algorithms when we present them. We
+also note that our methods work equally well when the feasible set of slates Asis stochastic (but stationary) as
+in [Boutilier et al., 2018].
+8theoptimal value function V—is given by the ﬁxed point of the Bellman equation:
+V(s) = max
+A2AR(s;A) +X
+s02SP(s0js;A)V(s0): (6)
+The optimal Q-function is deﬁned similarly:
+Q(s;A) =R(s;A) +X
+s02SP(s0js;A)V(s0): (7)
+The optimal policy satisﬁes (s) = arg max A2AQ(s;A).
+When transition and reward models are both provided, optimal policies and value
+functions can be computed using a variety of methods [Puterman, 1994], though generally
+these require approximation in large state/action problems [Bertsekas and Tsitsiklis, 1996].
+With sampled data, RL methods such as TD-learning [Sutton, 1988], SARSA [Rummery and
+Niranjan, 1994, Sutton, 1996] and Q-learning [Watkins and Dayan, 1992] can be used (see
+[Sutton and Barto, 1998] for an overview). Assume training data of the form (s;A;r;s0;A0)
+representing observed transitions and rewards generated by some policy . The Q-function
+Qcan be estimated using SARSA updates of the form:
+Q(t)(s;A) (t)[r+Q(t 1)(s0;A0)] + (1 (t))Q(t 1)(s;A); (8)
+whereQ(t)represents the tth iterative estimate of Qandis the learning rate. SARSA,
+Eq. (8), is on-policy and estimates the value of the data-generating policy . However, if
+the policy has sufﬁcient exploration or other forms of stochasticity (as is common in large
+recommender systems), acting greedily w.r.t. Q, and using the data so-generated to train a
+newQ-function, will implement a policy improvement step [Sutton and Barto, 1998]. With
+repetition—i.e., if the updated Qis used to make recommendations (with some exploration),
+from which new training data is generated—the process will converge to the optimal Q-
+function. Note that acting greedily w.r.t. Qrequires the ability to compute optimal slates at
+serving time. In what follows, we use the term SARSA to refer to the (on-policy) estimation
+of the Q-function Q(s;a)of aﬁxed policy, i.e., the TD-prediction problem on state-action
+pairs.3
+The optimal Q-function Qcan be estimated directly in a related fashion:
+Q(t)(s;A) (t)[r+ max
+A0Q(t 1)(s0;A0)] + (1 (t))Q(t 1)(s;A): (9)
+whereQ(t)represents the tth iterative estimate of Q. Q-learning, Eq. (9), is off-policy
+and directly estimates the optimal Q-function (again, assuming suitable randomness in the
+data-generating policy ). Unlike SARSA, Q-learning requires that one compute optimal
+slatesA0at training time, not just at serving time.
+3SARSA is often used to refer to the on-policy control method that includes making policy improvement
+steps. We use it simply to refer to the TD-method based on SARSA updates as in Eq. (8).
+94 S LATE Q: Slate Decomposition for RL
+One key challenge in the formulation above is the combinatorial nature of the action space,
+consisting of all jIj
+k
+k!orderedk-sets overI. This poses three key difﬁculties for RL
+methods. First, the sheer size of the action space makes sufﬁcient exploration impractical.
+It will generally be impossible to execute all slates even once at any particular state, let
+alone satisfy the sample complexity requirements of TD-methods. Second, generalization
+of Q-values across slates is challenging without some compressed representation. While
+a slate could be represented as the collection of features of its constituent items, this im-
+poses greater demands on sample complexity; we may further desire greater generalization
+capabilities. Third, we must solve the combinatorial optimization problem of ﬁnding a
+slate with maximum Q-value—this is a fundamental part of Q-learning and a necessary
+component in any form of policy improvement. Without signiﬁcant structural assumptions
+or approximations, such optimization cannot meet the real-time latency requirements of
+production recommender systems (often on the order of tens of milliseconds).
+In this section, we develop SlateQ , a model that allows the Q-value of a slate to be
+decomposed into a combination of the item-wise Q-values of its constituent items . This
+decomposition exposes precisely the type of structure needed to allow effective exploration,
+generalization and optimization. We focus on the SLATE Qdecomposition in this section—
+the decomposition itself immediately resolves the exploration and generalization concerns.
+We defer discussion of the optimization question to Section 5.
+Our approach depends to some extent on the nature of the user choice model, but critically
+on the interaction it has with subsequent user behavior, speciﬁcally, how it inﬂuences both
+expected engagement (i.e., reward) and user latent state (i.e., state transition probabilities).
+We require two assumptions to derive the S LATE Q decomposition.
+•Single choice (SC): A user consumes a single item from each slate (which may be
+thenull item?).
+•Reward/transition dependence on selection (RTDS): The realized reward (user
+engagement) R(s;A)depends (perhaps stochastically) only on the item i2Acon-
+sumed by the user (which may also be the null item?). Similarly, the state transition
+P(s0js;A)depends only on the consumed i2A.
+Assumption SCimplies that the user selection of a subset BAfrom slateAhas
+P(Bjs;A)>0only ifjBj= 1. While potentially limiting in some settings, in our ap-
+plication (see Section 9), users can consume only one content item at a time. Returning to
+the slate for a second item is modeled and logged as a separate event, with the user making
+a selection in a new state that reﬂects engagement with the previously selected item. As
+such, SCis valid in our setting.4LettingR(s;A;i )denote the reward when a user in state s,
+4Domains in which the user can select multiple items without ﬁrst engaging with them (i.e., without induced
+some change in state) would be more accurately modeled by allowing multiple selection. Our SLATE Qmodel
+can be extended to incorporate a simple correction term to accurately model user selection of multiple items by
+assuming conditional independence of item-choice probabilities given A.
+10presented with slate A, selects item i2A, andP(s0js;A;i )the corresponding probability
+of a transition to s0, theSCassumption allows us to express immediate rewards and state
+transitions as follows:
+R(s;A) =X
+i2AP(ijs;A)R(s;A;i ); (10)
+P(s0js;A) =X
+i2AP(ijs;A)P(s0js;A;i ): (11)
+TheRTDS assumption is also realistic in many recommender systems, especially with
+respect to immediate reward. It is typically the case that a user’s engagement with a selected
+item is not inﬂuenced to a great degree by the options in the slate that were not selected. The
+transition assumption also holds in recommender systems where direct user interaction with
+items drives user utility, overall satisfaction, new interests, etc., and hence is the primary
+determinant of the user’s underlying latent state. Of course, in some recommender domains,
+unconsumed items in the slate (say, impressions of content descriptions, thumbnails, clips,
+etc) may themselves create, say, future curiosity, which should be reﬂected by changes in the
+user’s latent state. But even in such cases RTDS may be treated as a reasonable simplifying
+assumption, especially where such impressions have signiﬁcantly less impact on the user
+than consumed items themselves. The RTDS assumption can be stated as:
+R(s;A;i ) =R(s;A0;i) =R(s;i);8A;A0containingi; (12)
+P(s0js;A;i ) =P(s0js;A0;i) =P(s0js;i);8A;A0containingi: (13)
+Our decomposition of (on-policy) Q-functions for a ﬁxed data-generating policy relies
+on an item-wise auxiliary function Q(s;i), which represents the LTV of a user consuming
+an itemi, i.e., the LTV of iconditional on it being clicked. Under RTDS , this function is
+independent of the slate Afrom which iwas selected. We deﬁne:
+Q(s;i) =R(s;i) +X
+s02SP(s0js;i)V(s0): (14)
+Incorporating the SCassumption, we immediately have:
+Proposition 1. Q(s;A) =P
+i2AP(ijs;A)Q(s;i):
+Proof. This holds since:
+Q(s;A) =R(s;A) +X
+s02SP(s0js;A)V(s0) (15)
+=X
+i2AP(ijs;A)R(s;i) +X
+i2AP(ijs;A)X
+s02SP(s0js;i)V(s0) (16)
+=X
+i2AP(ijs;A)[R(s;i) +X
+s02SP(s0js;i)V(s0)] (17)
+=X
+i2AP(ijs;A)Q(s;i): (18)
+11Here Eq. (16) follows immediately from SCandRTDS (see Eqs. (10, 11, 12, 13)) and
+Eq. (18) follows from the deﬁnition of Q(see Eq. 14).
+This simple result gives a complete decomposition of slate Q-values into Q-values for
+individual items. Thus, the combinatorial challenges disappear if we can learn Q(s;i)using
+TD methods. Notice also that the decomposition exploits the existence of a known choice
+function. But apart from knowing it (and using it our Q-updates that follow), we make
+no particular assumptions about the choice model apart from SC. We note that learning
+choice models from user selection data is generally quite routine. We discuss speciﬁc choice
+functions in the next section and how they can be exploited in optimization.
+TD-learning of the function Qcan be realized using a very simple Q-update rule. Given
+a consumed item iatswith observed reward r, a transition to s0, and selection of slate
+(s0) =A0, we updateQas follows:
+Q(s;i) (r+X
+j2A0P(jjs0;A0)Q(s0;j)) + (1 )Q(s;i): (19)
+The soundness of this update follows immediately from Eq. 14.
+Our decomposed SLATE Qupdate facilitates more compact Q-value models, using items
+as action inputs rather than slates . This in turn allows for greater generalization and data
+efﬁciency. Critically, while SLATE Qlearns item-level Q-values, it can be shown to converge
+to the correct slate Q-values under standard assumptions:
+Proposition 2. Under standard assumptions on learning rate schedules and state-action
+exploration [Sutton, 1988, Dayan, 1992, Sutton and Barto, 1998], and the assumptions on
+user choice probabilities, state transitions, and rewards stated in the text above, SLATE Q—
+using update (19) and deﬁnition of slate value (18)—will converge to the true slate Q-function
+Q(s;A)and support greedy policy improvement of .
+Proof. (Brief sketch.) Standard proofs of convergence of TD(0), applied to the state-action
+Q-functionQapply directly, with the exception of the introduction of the direct expectation
+over user choices, i.e.,P
+j2A0P(jjs0;A0), rather than the use of sampled choices.5However,
+it is straightforward to show that incorporating the explicit expectation does not impact the
+convergence of TD(0) (see, for example, the analysis of expected SARSA [Van Seijen et al.,
+2009]). There is some additional impact of user choice on exploration policies as well—if
+the choice model is such that some item jhas choice probability P(jjs;A) = 0 forany
+slatesAwith(s)>0in some state s, we will not experience user selection of item jat
+statesunder(for value prediction of Vthis is not problematic, but it is for learning a
+Q). Thus the exploration policy must account for the choice model, either by sampling all
+slates at each state (which is very inefﬁcient), or by conﬁguring exploratory slates that ensure
+each itemjis sampled sufﬁciently often. For most common choice models (see discussion
+below), every item has non-zero probability of selection, in which case, standard action-level
+exploration conditions apply.
+5We note that sampled choice could also be used in the full on-policy setting, but is problematic for
+optimization/action maximization as we discuss below.
+12Notice that update (19) requires the use of a known choice model. Such choice models
+are quite commonly learned in ML-based recommender systems, as we discuss further below
+in Section 8. The introduction of this expectation—rather than relying on sampled user
+choices—can be viewed as reducing variance in the estimates much like expected SARSA ,
+as discussed by Sutton and Barto [1998] and analyzed formally by Van Seijen et al. [2009].
+Furthermore, it is straightforward to show that the standard SARSA(0) algorithm (with policy
+improvement steps) will converge to the optimal Q-function, subject to the considerations
+mentioned above, using standard techniques [Singh et al., 2000, Van Seijen et al., 2009].
+The decomposition can be applied to Q-learning of the optimal Q-function as well,
+requiring only a straightforward modiﬁcation of Eq. (14) to obtain Q(s;i), the optimal
+(off-policy) conditional-on-click item-wise Q-function, speciﬁcally, replacing V(s0)with
+V(s0)(the proof is analogous to that of Proposition 1):
+Proposition 3. Q(s;A) =P
+i2AP(ijs;A)Q(s;i):
+Likewise, extending the decomposed update Eq. (19) to full Q-learning requires only
+that we introduce the usual maximization:
+Q(s;i) (r+max
+A02AX
+j2A0P(jjs0;A0)Q(s0;j)) + (1 )Q(s;i): (20)
+As above, it is not hard to show that Q-learning using this update will converge, using
+standard techniques [Watkins and Dayan, 1992, Van Seijen et al., 2009] and with similar
+considerations to those discussed in the proof sketch of Proposition 2:
+Proposition 4. Under standard assumptions on learning rate schedules and sufﬁcient
+exploration [Sutton and Barto, 1998], and the assumptions on user choice probabilities,
+state transitions, and rewards stated in the text above, SLATE Q—using update (20) and
+deﬁnition of slate value in Proposition 3—will converge to the optimal slate Q-function
+Q(s;A).
+The decomposition of both the policy-based and optimal Q-functions above accomplishes
+two of our three desiderata: it circumvents the natural combinatorics of both exploration and
+generalization. But we still face the combinatorics of action maximization: the LTV slate
+optimization problem is the combinatorial optimization problem of selecting the optimal
+slate fromA, the space of all jIj
+k
+k!possible (ordered) k-sets overI. This is required during
+training with Q-learning (Eq. (9)) and when engaging in policy improvement using SARSA.
+One also needs to solve the slate optimization problem at serving time when executing the
+induced greedy policy (i.e., presenting slates with maximal LTV to users given a learned
+Q-function). In the next section, we show that exact optimization is tractable and also develop
+several heuristic approaches to tackling this problem.
+5 Slate Optimization with Q-values
+We address the LTV slate optimization in this section. We develop an exact linear program-
+ming formulation of the problem in Section 5.1 using (a generalization of) the conditional
+13logit model. In Section 5.2, we describe two computationally simpler heuristics for the
+problem, the top- kand greedy algorithms.
+5.1 Exact Optimization
+We formulate the LTV slate optimization problem as follows:
+max
+AI
+jAj=kX
+i2AP(ijs;A)Q(s;i): (21)
+Intuitively, a user makes her choice from the slate based on the perceived properties (e.g.,
+attractiveness, quality, topic, utility) of the constituent items. In the LTV slate optimization
+problem, we value the selection of an item from the slate based on its LTV or Q-value, rather
+than its immediate appeal to the user. As discussed above, we assume access to the choice
+modelP(ijs;A), since models (e.g., pCTR models) predicting user selection from a slate
+are commonly used in myopic recommenders. Of course, the computational solution of the
+slate optimization problem depends on the form of the choice model. We discuss the use of
+theconditional logit model (CLM) inSLATE Q(and the more general format, Eq. (2)) in this
+subsection.
+When using the conditional logit model (see Eq. 1), the LTV slate optimization problem
+is analogous in a formal sense to, assortment optimization orproduct line design [Chen
+and Hausman, 2000, Sch ¨on, 2010, Rusmevichientong and Topaloglu, 2012], in which a
+retailer designs or stocks a set of kproducts whose expected revenue or proﬁt is maximized
+assuming that consumers select products based on their appeal (and not their value to the
+retailer).6
+Our optimization formulation is suited to any general conditional choice model of the
+form Eq. (2) (of which the conditional logit is an instance).7We assume a user in state s
+selects itemi2Awith unnormalized probability v(s;i), for some function v. In the case of
+the conditional logit, v(s;i) =eu(s;i). We can express the optimization Eq. (21) w.r.t. such
+avas a fractional mixed-integer program (MIP), with binary variables xi2f0;1gfor each
+6Naturally, there are more complex variants of assortment optimization, including the choice of price,
+inclusion of ﬁxed production or inventory costs, etc. There are other conceptual differences with our model as
+well. While not a formal requirement, LTV of an item in our setting reﬂects user engagement, hence reﬂects
+some form of user satisfaction as opposed to direct value to the recommender. In addition, many assortment
+optimization models are designed for consumer populations, hence choice probabilities are often reﬂective of
+diversity in the population (though random selection by individual consumers is sometimes considered as well;
+by contrast, in the recommender setting, choice probabilities are usually dependent on the features of individual
+users and typically reﬂect the recommender’s uncertainty about a user’s immediate intent or context.
+7We note that since the ordering of items within a slate does not impact choice probabilities in this model,
+the action (or slate) space consists of the I
+k
+unorderedk-sets in this case.
+14itemi2Iindicating whether ioccurs in slate A:
+maxX
+i2Ixiv(s;i)Q(s;i)
+v(s;?) +P
+jxjv(s;j)(22)
+s.t.X
+i2Ixi=k;xi2f0;1g;8i2I: (23)
+This is a variant of a classic product-line (or assortment) optimization problem [Chen and
+Hausman, 2000, Sch ¨on, 2010]. Our problem is somewhat simpler since there are no ﬁxed
+resource costs or per-item costs.
+Chen and Hausman [2000] show that that the binary indicators in this MIP can be relaxed
+to obtain the following fractional linear program (LP):
+maxX
+i2Ixiv(s;i)Q(s;i)
+v(s;?) +P
+jxjv(s;j)(24)
+s.t.X
+i2Ixi=k; 0xi1;8i2I: (25)
+The constraint matrix in this relaxed problem is totally unimodular, so the optimal (vertex)
+solution is integral and standard non-linear optimization methods can be used. However,
+since it is a fractional LP, it is directly amenable to the Charnes-Cooper 1962 transformation
+and can be recast directly as a (non-fractional) LP. To do so, we introduce an additional
+variabletthat implicitly represents the inverse choice weight of the selected items t=
+(v(s;?) +P
+jxjv(s;j)) 1, and auxiliary variables yithat represent the products xi
+(v(s;?) +P
+jxjv(s;j)) 1, giving the following LP:
+maxX
+iyiv(s;i)Q(s;i) (26)
+s.t.tv(s;?) +X
+iyiv(s;i) = 1 (27)
+t0;X
+iyikt: (28)
+The optimal solution (y;t)to this LP yields the optimal xiassignment in the fractional
+LP Eq. (24) via xi=y
+i=t, which in turn gives the optimal slate in the original fractional
+MIP Eq. (22)—just add any item to the slate where y
+i>0. This formulation applies equally
+well to the MNL model, or related random utility models. The slate optimization problem is
+now immediately proven to be polynomial-time solvable.
+Observation 5. The LTV slate optimization problem Eq. 21, under the general conditional
+choice model (including the conditional logit model), is solvable in polynomial-time in the
+number of itemsjIj(assuming a ﬁxed slate size k).
+15Thus full Q-learning with slates using the SLATE Qdecomposition imposes at most a
+small polynomial-time overhead relative to item-wise Q-learning despite its combinatorial
+nature. We also note that many production recommender systems limit the set of items to be
+ranked using a separate retrieval policy, so the set of items to consider in the LP is usually
+much smaller than the complete item set. We discuss this further below in Section 8.
+5.2 Top- kand Greedy Optimization
+While the exact maximization of slates under the conditional choice model can be accom-
+plished in polynomial-time using Qand the item-score function v, we may wish to avoid
+solving an LP at serving time. A natural heuristic for constructing a slate is to simply add
+thekitems with the highest score. In our top-koptimization procedure, we insert items into
+the slate in decreasing order of the product v(s;i)Q(s;i).8This incurs only a O(log(I))
+overhead relative to the O(I)time required for maximization for item-wise Q-learning.
+One problem with top- koptimization is the fact that, when considering the item to
+add to theLth slot (for 1< Lk), item scores are not updated to reﬂect the previous
+L 1items already added to the slate. Greedy optimization , instead of scoring each item
+ab initio , updates item scores with respect to the current partial slate. Speciﬁcally, given
+A0=fi(1);:::i (L 1)gof sizeL 1<k, theLth item added is that with maximum marginal
+contribution:
+arg max
+i62A0v(s;i)Q(s;i) +P
+`<Lv(s;i(`))Q(s;i(`))
+v(s;i) +v(s;?) +P
+`<Lv(s;i(`)):
+We compare top- kand greedy optimizations with the LP solution in our ofﬂine simulation
+experiments below.
+Under the general conditional choice model (including for the conditional logit model),
+neither top-knor greedy optimization will ﬁnd the optimal solution as following counterex-
+ample illustrates:
+Item Score (v(s;i))Q-value
+? 1 0
+a 2 0.8
+b1;b2 1 1
+The null item is always on the slate. Items b1;b2are identical w.r.t. their behavior. We
+haveV(fag) = 1:6=3, greater than V(fbig) = 1=2. Both top-kand greedy will place aon
+the slate ﬁrst. However, V(fa;big) = 2:6=4, whereas the optimal slate fb1;b2gis valued at
+2=3. So for slate size k= 2, neither top- knor greedy ﬁnd the optimal slate.
+While one might hope that the greedy algorithm provides some approximation guarantee,
+the set function is not submodular, which prevents standard analyses (e.g., [Nemhauser
+et al., 1978, Feige, 1998, Buchbinder et al., 2014]) from being used. The following example
+illustrates this.
+8Top-kslate construction is quite common in slate-based myopic recommenders. It has recently been used in
+LTV optimization as well [Chen et al., 2018].
+16Item Score (v(s;i))Q-value
+? 1 10
+a 1 10
+b 2 "
+We have expected values of the following item sets: V(;) = 10;V(fag) = 10;V(fbg) =
+(10 +")=3;V(fa;bg) = 5 +"=2. The fact that V(fag) V(;)< V(fa;bg) V(fbg)
+demonstrates lack of submodularity (the set function is also not monotone).9
+While we have no current performance guarantees for greedy and top- k, it’s not hard to
+show that top- kcan perform arbitrarily poorly.
+Observation 6. The approximation ratio of top- koptimization for slate construction is
+unbounded.
+The following example demonstrates this.
+Item Score (v(s;i))Q-value
+? " 0
+a " 1
+b 1 "
+Suppose we have k= 1. Top-kscores item bhigher than a, creating the slate with value
+V(fbg) ="=(1 +"), while the optimal slate has value V(fag) = 1=2.
+5.3 Algorithm Variants
+With a variety of slate optimization methods at our disposal, many variations of RL algorithms
+exist depending on the optimization method used during training and serving. Given a trained
+SLATE Qmodel, we can apply that model to serve users using either top- k, greedy or the
+LP-based optimal method to generate recommended slates. Below we use the designations
+TS, GS, or OS to denote these serving protocols, respectively. These designations apply
+equally to (off-policy) Q-learned models, (on-policy) SARSA models, and even (non-RL)
+myopic models.10
+During Q-learning, slate optimization is also required at training time to compute the
+maximum successor state Q-value (Eq. 20). This can also use either of the three optimization
+methods, which we designate by TT, GT, and OT for top- k, greedy and optimal LP training,
+respectively. This designation is not applicable when training a myopic model or SARSA
+(since SARSA is trained only on-policy). This gives us the following collection of algorithms.
+For Q-learning, we have:
+9It is worth observing that without our exact cardinality constraint (sets must have size k), the optimal set
+under MNL can be computed in a greedy fashion [Talluri and van Ryzin, 2004] (the analysis also applies to the
+conditional logit model).
+10A myopic model is equivalent to a Q-learned model with = 0.
+17Serving
+Top-k Greedy LP (Opt)
+TrainingTop-k QL-TT-TS QL-TT-GS QL-TT-OS
+Greedy QL-GT-TS QL-GT-GS QL-GT-OS
+LP (Opt) QL-OT-TS QL-OT-GS QL-OT-OS
+For SARSA and Myopic recommenders, we have:
+Serving SARSA Myopic
+Top-k SARSA-TS MYOP-TS
+Greedy SARSA-GS MYOP-GS
+LP (Opt) SARSA-OS MYOP-OS
+In our experiments below we also consider two other baselines: Random, which rec-
+ommends random slates from the feasible set; and full-slate Q-learning (FSQ) , which
+is a standard, non-decomposed Q-learning method that treats each slate atomically (i.e.,
+holistically) as a single action. The latter is a useful baseline to test whether the SLATE Q
+decomposition provides leverage for generalization and exploration.
+5.4 Approaches for Other Choice Models
+The SLATE Qdecomposition works with any choice model that satisﬁes the assumptions
+SCandRTDS , though the form of the slate optimization problem depends crucially on the
+choice model. To illustrate, we consider the cascade choice model outlined in Section 2
+(see, e.g., Eq. (3)). Notice that the cascade model, unlike the general conditional choice
+model, has position-dependent effects (i.e., reordering of items in the slate changes selection
+probabilities and the expected LTV of the slate). However, it is not hard to show that the
+cascade model exhibits a form of “ordered submodularity” if we assume that the LTV or
+conditional Q-value of not selecting from the slate is no greater that the Q-value of selecting
+any item on the slate, i.e., if Q(s;i)Q(s;?)for alli2I.11Speciﬁcially, the value of
+the marginal increase in value induced by adding item i`+1to the (ordered) partial slate
+(i1;i2;:::i`)is no greater than the increase in value of adding i`+1to a preﬁx of that slate
+(i1;i2;:::ij)for anyj < ` . Thus top-koptimization can be used to support training and
+serving of the S LATE Q approach under the cascade model.12
+While the general conditional choice model is order-independent, in practice, it may be
+the case that users incorporate some elements of a cascade-like model into the conditional
+choice model. For example, users may devote a random amount of time tor effort to inspect
+a slate ofkrecommended items, compare the top k0kitems, where k0=F(t)is some
+function of the available time, and select (perhaps noisily) the most preferred item from
+among those inspected. This model would be a reasonable approximation of user behavior
+11The statements to follow hold under the weaker condition that, for all states s, there are at least kitems
+is
+1;:::is
+ksuch thatQ(s;is
+j)Q(s;?);8jk(wherekis the slate size).
+12It is also not hard to show that top- kis not optimal for the cascade model.
+18in the case of recommenders that involve scrolling interfaces for example. In such a case,
+we end up with a distribution over slate sizes. A natural heuristic for the conditional choice
+model would be, once the k-slate is selected, to order the items on slate based their top- k
+or greedy scores to increase the odds that the random slate actually observed by the user
+contains items that induce highest expected long-term engagement.
+6 User Simulation Environment
+We discuss experiments with the various SLATE Qalgorithms in Section 7, using a simulation
+environment that, though simpliﬁed and stylized, captures several essential elements of a
+typical recommender system that drive a need for the long/short-term tradeoffs captured by
+RL methods. In this section, we describe the simulation environment and models used to test
+SLATE Qin detail. We describe the environment setup in a fairly general way, as well as the
+speciﬁc instantiations used in our experiments, since the simulation environment may be of
+broader interest.
+6.1 Document and Topic Model
+We assume a set of documentsDrepresenting the content available for recommendation. We
+also assume a set of topics (or user interests) Tthat capture fundamental characteristics of
+interest to users; we assume topics are indexed 1;2;:::jTj. Each document d2Dhas an
+associated topic vector d2[0;1]jTj, wheredjis the degree to which dreﬂects topic j.
+In our experiments, for simplicity, each document dhas only a single topic T(d),
+sod=eifor someijTj(i.e., we have a one-hot encoding of the document topic).
+Documents are drawn from content distribution PDover topic vectors, which in our one-hot
+topic experiments is simply a distribution over individual topics.
+Each document d2Dalso has a length `(d)(e.g., length of a video, music track or
+news article). This is sometime used as one factor in assessing potential user engagement.
+While the model supports documents of different lengths, in our experiments, we assume
+each document dhas the same constant length `.
+Documents also have an inherent quality Ld, representing the topic-independent attrac-
+tiveness to the average user. Quality varies randomly across documents, with document d’s
+quality distributed according to N(T(d);2), wheretis atopic-speciﬁc mean quality for
+anyt2T. For simplicity, we assume a ﬁxed variance across all topics. In general, quality
+can be estimated over time from user responses as we discuss below; but in our experiments,
+we assumeLdis observable to the recommender system (but not to the user a priori , see
+below). Quality may also be user-dependent, though we do not consider that here, since the
+focus of our stylized experiments is on the ability of our RL methods to learn average quality
+at the topic level. Both the topic and quality of a consumed document impact long-term user
+behavior (see Section 6.4 below).
+In our experiments, we use T= 20 topics, while the precise number of documents jDj
+is immaterial as we will see. Of these, 14topics are low quality, with their mean quality
+19evenly distributed across the interval t2[ 3;0]. The remaining 6topics are high quality,
+with their mean quality evenly distributed across the interval t2[0;3].
+6.2 User Interest and Satisfaction Models
+Usersu2Uhave various degrees of interests in topics, ranging from  1(completely
+uninterested) to 1(fully interested), with each user uassociated with an interest vector
+u2[ 1;1]jTj. Useru’s interest in document dis given by the dot product I(u;d) =ud.
+We assume some prior distribution PUover user interest vectors, but user u’s interest vector
+is dynamic, i.e., inﬂuenced by their document consumption (see below). To focus on how
+our RL methods learn to inﬂuence user interests and the quality of documents consumed, we
+treat a user’s interest vector uasfully observable to the recommender system. In general,
+user interests are latent, and a partially observable/belief state model is more appropriate.
+A user’s satisfaction S(u;d)with a consumed document dis a function f(I(u;d);Ld)
+of useru’s interest and document d’s quality. While the form of fmay be quite complex
+in general, we assume a simple convex combination S(u;d) = (1 )I(u;d) +Ld.
+Satisfaction inﬂuences user dynamics as we discuss below.
+In our experiments, a new user u’s prior interest uis sampled uniformly from u2
+[ 1;1]jTj; speciﬁcally, there is no prior correlation across topics. We use an extreme value of
+= 1:0so that a user’s satisfaction with a consumed document is fully dictated by document
+quality. This leaves user interest only to drive the selection of the document from the slate
+which we describe next.
+6.3 User Choice Model
+When presented with a slate of kdocuments, a user choice model impacts which document
+(if any) from the slate is consumed by the user. We assume that a user can observe any
+recommended document’s topic prior to selection, but cannot observe its quality before
+consumption. However, the user will observe the true document quality after consuming it.
+While somewhat stylized, this treatment of topic and quality observability (from the user’s)
+perspective is reasonably well-aligned with the situation in many recommendation domains.
+The general simulation environment allows arbitrary choice functions to be deﬁned as
+a function of user’s state (interest vector, satisfaction) and the features of the document
+(topic vector, quality) in the slate. In our experiments, we use the general conditional choice
+model (Eq. (2)) as the main model for our RL methods. User u’s interest in document d,
+I(u;d) =ud, deﬁnes the document’s relative appeal to the user and serves as the basis of
+the choice function. For slates of size k, the null document ?is always added as a (k+ 1) st
+element, which (for simplicity) has a ﬁxed utility across all users.
+We also use a second choice model in our experiments, an exponential cascade model
+[Joachims, 2002], that accounts for document position on a slate. This choice model assumes
+“attention” is given to one document at a time, with exponentially decreasing attention given
+to documents as a user moves down the slate. The probability that the document in position j
+is inspected is 0j, where0is abase inspection probability andis the inspection decay .
+20If a document is given attention, then it is selected with a base choice probability P(u;d); if
+the document in position jis not examined or selected/consumed, then the user proceeds to
+the(j+ 1) st document. The probability that the document in position jis consumed is:
+P(j;A) =0jP(u;d):
+While we don’t optimize for this model, we do run experiments in which the recommender
+learns a policy that assumed the general conditional choice model, but users behave according
+to the cascade model. In this case, the base choice probability P(u;d)for a document in
+the cascade model is set to be its normalized probability in the conditional choice model.
+While the cascade model allows for the possibility of no click, even without the ﬁctitious
+null document?, we keep the null document to allow the probabilities to remain calibrated
+relative to the conditional model. In our experiments, we use 0= 1:0and= 0:65.
+6.4 User Dynamics
+To allow for a non-myopic recommendation algorithm—in our case, RL methods—to
+impact overall user engagement positively, we adopt a simple, but natural model of session
+termination . We assume each user uhas an initial budgetBuof time to engage with content
+during an extended session. This budget is not observable to the recommender system, and is
+randomly realized at session initiation using some prior P(B).13Each document dconsumed
+reduces user u’s budget by the ﬁxed document length `. But after consumption, the quality of
+the document (partially) replenishes the used budget where the budget decreases by the ﬁxed
+document length `less a bonusb<` that increases with the document’s appeal S(u;d). In
+effect, more satisfying documents decrease the time remaining in a session at a lower rate. In
+particular, for any ﬁxed topic, documents with higher quality have a higher positive impact
+on cumulative engagement (reduce budget less quickly) than lower quality documents. A
+session ends once Bureaches 0. Since sessions terminate with probability 1, discounting is
+unnecessary.
+In our experiments, each user’s initial budget is Bu= 200 units of time; each consumed
+document uses `= 4units; and if a slate is recommended, but no document is clicked, 0:5
+units are consumed. We set bonus b=0:9
+3:4`S(u;d).
+The second aspect of user dynamics allows user interests to evolve as a function of
+the documents consumed. When user uconsumes document d, her interest in topic T(d)
+is nudged stochastically, biased slightly towards increasing her interest, but allows some
+chance of decreasing her interest. Thus, a recommender faces a short-term/long-term tradeoff
+between nudging a user’s interests toward topics that tend to have higher quality at the
+expense of short-term consumption of user budget.
+We use the following stylized model to set the magnitude of the adjustment—how much
+the interest in topic T(d)changes—and its polarity—whether the user’s interest in topic
+T(d)increases or decreases. Let t=T(d)be the topic of the consumed document dandIt
+13Naturally, other models that do not use terminating sessions are possible, and could emphasize amount of
+engagement per period.
+21be useru’s interest in topic tprior to consumption of document d. The (absolute) change in
+useru’s interest is t(It) = ( yjItj+y) It, wherey2[0;1]denotes the fraction of the
+distance between the current interest level and the maximum level (1; 1)that the update
+move useru’s interest. This ensures that more entrenched interests change less than neutral
+interests.
+In our experiments we set y= 0:3. A positive change in interest, It It+ t(It),
+occurs with probability [I(u;d) + 1]=2, and a negative change, It It t(It), with
+probability [1 I(u;d)]=2. Thus positive (resp., negative) interests are more likely to be
+reinforced, i.e., become more positive (resp., negative), with the odds of such reinforcement
+increasing with the degree of entrenchment.
+6.5 Recommender System Dynamics
+At each stage of interaction with a user, mcandidate documents are drawn from PD, from
+which a slate of size kmust be selected for recommendation. This reﬂects the common situa-
+tion in many large-scale commercial recommenders in which a variety of mechanisms are
+used to sub-select a small set of candidates from a massive corpus, which are in turn scored
+using more reﬁned (and computationally expensive) predictive models of user engagement.
+In our simulation experiments, we use m= 10 andk= 3. This small set of candidate
+documents and the small slate size is used to allow explicitly enumeration of all slates, which
+allows us to compare SLATE Qto RL methods like Q-learning that do not decompose the
+Q-function. In our live experiments with the YouTube platform (see Section 9), slates are of
+variable size and the number of candidates is on the order of O(1000) .
+7 Empirical Evaluation: Simulations
+We now describe several sets of results designed to assess the impact of the SLATE Q
+decomposition. Our simulation environment is implemented in a general fashion, supporting
+many of the general models and behaviors described in the previous sections. Our RL
+algorithms, both those using SLATE Qand FSQ, are implemented using Dopamine [Castro
+et al., 2018]. We use a standard two-tower architecture with stacked fully connected layers
+to represent user state and document. Updates to the Q-models are done online by batching
+experiences from user simulations. Each training-serving strategy is evaluated over 5000
+simulated users for statistical signiﬁcance. All results are within a 95% conﬁdence interval.
+7.1 Myopic vs. Non-myopic Recommendations
+We ﬁrst test the quality of (non-myopic) LTV policies learned using SLATE Qto optimize
+engagement ( = 1) , using a selection of the SLATE Qalgorithms (SARSA vs. Q-learning,
+different slate optimizations for training/serving). We compare these to myopic scoring
+(MYOP) (= 0), which optimizes only for immediate reward, as well as a Random policy.
+The goal of these comparisons is to identify whether optimizing for long-term engagement
+22using RL (either Q-learning or 1-step policy improvement via SARSA) provides beneﬁt over
+myopic recommendations.
+The following table compares several key metrics of the ﬁnal trained algorithms (all
+methods use 300K training steps):
+Strategy Avg. Return (%) Avg. Quality (%)
+Random 159.2 -0.5929
+MYOP-TS 166.3 (4.46%) -0.5428 (8.45%)
+MYOP-GS 166.3 (4.46%) -0.5475 (7.66%)
+SARSA-TS 168.4 (5.78%) -0.4908 (17.22%)
+SARSA-GS 172.1 (8.10%) -0.3876 (34.63%)
+QL-TT-TS 168.4 (5.78%) -0.4931 (16.83%)
+QL-GT-GS 172.9 (8.61%) -0.3772 (36.38%)
+QL-OT-TS 169.0 (6.16%) -0.4905 (17.27%)
+QL-OT-GS 173.8 (9.17%) -0.3408 (42.52%)
+QL-OT-OS 174.6 (9.67%) -0.3056 (48.46%)
+The LTV methods (SARSA and Q-learning) using SLATE Qoffer overall improvements
+in average return per user session. The magnitude of these improvements only tells part
+of the story: we also show percentage improvements relative to Random are shown in
+parentheses—Random gives a sense of the baseline level of cumulative reward that can be
+achieved without any user modeling at all. For instance, relative to the random baseline, QL-
+OT-GS provides a provides a 105.6% greater improvement than MYOP. The LTV methods
+all learn to recommend documents of much higher quality than MYOP, which has a positive
+impact on overall session length, which explains the improved return per user.
+We also see that LP-based slate optimization during training (OT) provides improvements
+over top-kand greedy optimization (TT, GT) in Q-learning when comparing similar serving
+regimes (e.g., QL-OT-GS vs. QL-GT-GS , and QL-OT-TS vs. QL-TT-TS). Optimal serving
+(OS) also shows consistent improvement over top- kand greedy serving—and greedy serving
+(GS) improves signiﬁcantly over top- kserving (TS)—when compared under the same
+training regime. However, the combination of optimal training and top- kor greedy serving
+performs well, and is especially useful when serving latency constraints are tight, since
+optimal training is generally done ofﬂine.
+Finally, optimizing using Q-learning gives better results than on-policy SARSA (i.e.,
+one-step improvement) under comparable training and serving regimes. But SARSA itself
+has signiﬁcantly higher returns than MYOP, demonstrating the value of on-policy RL for
+recommender systems. Indeed, repeatedly serving-then-training (with some exploration)
+using SARSA would implement a natural, continual policy improvement. These results
+demonstrate, in this simple synthetic recommender system environment, that using RL to
+plan long-term interactions can provide signiﬁcant value in terms of overall engagement.
+237.2 S LATE Q vs. Holistic Optimization
+Next we compare the quality of policies learned using the SLATE Qdecomposition to FSQ,
+the non-decomposed Q-learning method that treats each slate atomically as a single action.
+We setjTj= 20 ,m= 10 , andk= 3 so that we can enumerate all 10
+3
+slates for FSQ
+maximization. Note that the Q-function for FSQ requires representation of all 20
+3
+= 1140
+slates as actions, which can impede both exploration and generalization. For SLATE Qwe
+test only SARSA-TS (since this is the method tested in our live experiment below). The
+following table shows our results:
+Avg. Return (%) Avg. Quality (%)
+Random 160.6 -0.6097
+FSQ 164.2 (2.24%) -0.5072 (16.81%)
+SARSA-TS 170.7 (6.29%) -0.5340 (12.41%)
+While FSQ, which is an off-policy Q-learning method, is guaranteed to converge to
+the optimal slate policy in theory with sufﬁcient exploration, we see that, even using an
+on-policy method like SARSA with a single step of policy improvement, SLATE Qmethods
+perform signiﬁcantly better than FSQ, offering a 180% greater improvement over Random
+than FSQ. This is the case despite SLATE Qusing no additional training-serving iterations
+to continue policy improvement. This is due to the fact that FSQ must learn Q-values for
+1140 distinct slates, making it difﬁcult to explore and generalize. FSQ also takes roughly 6X
+the training time of SLATE Qover the same number of events. These results demonstrate the
+considerable value of the S LATE Q decomposition.
+Improved representations could help FSQ generalize somewhat better, but the approach
+is inherently unscalable, while SLATE Qsuffers from no such limitations (see live experiment
+below). Interestingly, FSQ does converge quickly to a policy that offers recommendations of
+greater average quality than SLATE Q, but fails to make an appropriate tradeoff with user
+interest.
+7.3 Robustness to User Choice
+Finally, we test the robustness of SLATE Qto changes in the underlying user choice model.
+Instead of the assumed choice model deﬁned above, users select items from the recommended
+slate using a simple (exponential) cascade model , where items on the slate are inspected
+from top-to-bottom with a position-speciﬁc probability, and consumed with probability
+proportional to I(u;d)if inspected. If not consumed, the next item is inspected. Though
+users act in this fashion, SLATE Qis trained using the original conditional choice model and
+the same decomposition is also used to optimize slates at serving time.
+The following table shows results:
+24Strategy Avg. Return (%) Avg. Quality (%)
+Random 159.9 -0.5976
+MYOP-TS 163.6 (2.31%) -0.5100 (14.66%)
+SARSA-TS 166.8 (4.32%) -0.4171 (30.20%)
+QL-TT-TS 166.5 (4.13%) -0.4227 (29.27%)
+QL-OT-TS 167.5 (4.75%) -0.3985 (33.32%)
+QL-OT-OS 167.6 (4.82%) -0.3903 (34.69%)
+SLATE Qcontinues to outperform MYOP, even when the choice model does not accu-
+rately reﬂect the true environment, demonstrating its relative robustness. SLATE Qcan be
+used with other choice models. For example, SLATE Qcan be trained by assuming the cas-
+cade model, with only the optimization formulation requiring adaptation (see our discussion
+in Section 5.4). But since any choice model will generally be an approximation of true user
+behavior, this form of robustness is critical.
+Notice that QL-TT and SARSA have inverted relative performance compared to the
+experiments above. This is due to the fact that Q-learning exploits the (incorrect) choice
+model to optimize during training, while SARSA, being on-policy, only uses the choice
+model to compute expectations at serving time. This suggests that an on-policy control
+method like SARSA (with continual policy improvement) may be more robust than Q-
+learning in some settings.
+8 A Practical Methodology
+The deployment of a recommender system using RL or TD methods to optimize for long-
+term user engagement presents a number of challenges in practice. In this section, we identify
+several of these and suggest practical techniques to resolve them, including ways in which
+to exploit an existing myopic , item-level recommender to facilitate the deployment of a
+non-myopic system.
+Many (myopic) item-level recommender systems [Liu et al., 2009, Covington et al.,
+2016] have the following components:
+(i)Logging of impressions and user feedback;
+(ii)Training of some regression model (e.g., DNN) to predict user responses for user-item
+pairs, which are then aggregated by some scoring function;
+(iii) Serving of recommendations, ranking items by score (e.g., returning the top kitems
+for recommendation).
+Such a system can be exploited to quickly develop a non-myopic recommender system based
+on Q-values, representing some measure of long-term engagement, by addressing several
+key challenges.
+258.1 State Space Construction
+A critical part of any RL modeling is the design of the state space, that is, the development of
+a set of features that adequately capture a user’s past history to allow prediction of long-term
+value (e.g., engagement) in response to a recommendation. For the underlying process to
+be a MDP, the feature set should be (at least approximately) predictive of immediate user
+response (e.g., immediate engagement, hence reward ) and self-predictive (i.e., summarizes
+user history in a way that renders the implied dynamics Markovian).
+The features of an extant myopic recommender system typically satisfy both of these
+requirements, meaning that an RL or TD model can be built using the same logged data
+(organized into trajectories) and the same featurization. The engineering, experimentation
+and experience that goes into developing state-of-the-art recommender systems means that
+they generally capture (almost) all aspects of history required to predict immediate user
+responses (e.g., pCTR, listening time, other engagement metrics); i.e., they form a sufﬁcient
+statistic. In addition, the core input features (e.g., static user properties, summary statistics
+of past behavior and responses) are often self-predictive (i.e., no further history could
+signiﬁcantly improve next state prediction). This fact can often be veriﬁed by inspection
+and semantic interpretation of the (input) features. Thus, using the existing state deﬁnition
+provides a natural, practical way to construct TD or RL models. We provide experimental
+evidence below to support this assertion in Section 9.
+8.2 Generalization across Users
+In the MDP model of a recommender system, each user should be viewed as a separate
+environment or separate MDP. However, it is critical to allow for generalization across users,
+since few if any users generate enough experience to allow reasonable recommendations
+otherwise. Of course, such generalization is a hallmark of almost any recommender system.
+In our case, we must generalize the (implicit) MDP dynamics across users. The state
+representation afforded by an extant myopic recommender system is already intended to do
+just this, so by learning a Q-function that depends on the same user features and the myopic
+system, we obtain the same form of generalization.
+8.3 User Response Modeling
+As noted in Sections 4 and 5, SLATE Qtakes advantage of some measure of immediate item
+appeal or utility (conditioned on a speciﬁc user or state) to determine user choice behavior.
+In practice, since myopic recommender systems often predict these immediate responses,
+for example, using pCTR models, we can use these models directly to assess the immediate
+appealv(s;i)required by our SLATE Qchoice model. For instance, we can use a myopic
+model’s pCTR predictions directly as a (unnormalized) choice probabilities for items in
+a slate, or we can use the logits of such a model in the conditional logit choice model.
+Furthermore, by using the same state features (see above), it is straightforward to build
+a multi-task model [Zhang and Yang, 2017] that incorporates our long-term engagement
+26Regression 
+Ranking 
+Example 
+User Label Logging 
+Affect 
+Logging LTV Label 
+LTV Label 
+Generation LTV Component Figure 1: Schematic View of a Non-myopic Recommender Training System
+prediction with other user response predictions.
+8.4 Logging, Training and Serving Infrastructure
+The training of long-term values Q(s;a)requires logging of user data, and live serving
+of recommendations based on these LTV scores. The model architecture we detail below
+exploits the same logging, (supervised) training and serving infrastructure as used by the
+myopic recommender system.
+Fig. 1 illustrates the structure of our LTV-based recommender system—here we focus on
+SARSA rather than Q-learning, since our long-term experiment in Section 9 uses SARSA.
+In myopic recommender systems, the regression model predicts immediate user response
+(e.g., clicks, engagement), while in our non-myopic recommender system, label generation
+provides LTV labels, allowing the regressor to model Q(s;a).
+Models are trained periodically and pushed to the server. The ranker uses the latest model
+to recommend items and logs user feedback, which is used to train new models. Using LTV
+labels, iterative model training and pushing can be viewed as a form of generalized policy
+iteration [Sutton and Barto, 1998]. Each trained DNN represents the value of the policy that
+generated the prior batch of training data, thus training is effectively policy evaluation . The
+ranker acts greedily with respect to this value function, thus performing policy improvement .
+LTV label generation is similar to DQN training [Mnih et al., 2015]. A main network
+learns the LTV of individual items, Q(s;a)—this network is easily extended from the
+existing myopic DNN. For stability, bootstrapped LTV labels (Q-values) are generated using
+a separate label network . We periodically copy the weights of the main network to the label
+network and use the (ﬁxed) label network Qlabel(s;a)to compute LTV labels between copies.
+LTV labels are generated using Eq. (19).
+279 Empirical Evaluation: Live Experiments
+We tested the SLATE Qdecomposition—speciﬁcally, the SARSA-TS algorithm, on YouTube
+(https://www.youtube.com/ ), a large-scale video recommender with O(109)users
+andO(108)items in its corpus. The system is typical of many practical recommender systems
+with two main components. A candidate generator retrieves a small subset (hundreds) of
+items from a large corpus that best match a user context. The ranker scores/ranks candidates
+using a DNN with both user context and item features as input. It optimizes a combination
+of several objectives (e.g., clicks, expected engagement, several other factors).
+The extant recommender system’s policy is myopic , scoring items for the slate using
+their immediate (predicted) expected engagement. In our experiments, we replace the myopic
+engagement measure with an LTV estimate in the ranker scoring function. We retain other
+predictions and incorporate them into candidate scoring as in the myopic model. Our
+non-myopic recommender system maximizes cumulative expected engagement, with user
+trajectories capped at Ndays. Since homepage visits can be spaced arbitrarily in time, we
+use time-based rather than event-based discounting to handle credit assignment across large
+time gaps. If consecutive visits occur at times t1andt2, respectively, the relative discount
+of the reward at t2is(t2 t1)=c, wherecis a parameter that controls the time scale for
+discounting.
+Our model extends the myopic ranker using the practical methodology outlined in
+Section 8. Speciﬁcally, we learn a multi-task feedforward deep network [Zhang and Yang,
+2017], which learns Q(s;i), the predicted long-term engagement of item i(conditional
+on being clicked) in state s, as well as the immediate appeal v(s;i)for pCTR/user choice
+computation (several other response predictions are learned, which are identical to those
+used by the myopic model). The multi-task feedforward DNN network has 4 hidden layers of
+sizes 2048, 1024, 512, 256; and used ReLU activation functions on each of the hidden layers.
+Apart from the LTV/Q-value head, other heads include pCTR, and other user responses.
+To validate our methodology, the DNN structure and all input features are identical to the
+production model which optimizes for short-term (myopic) immediate reward. The state is
+deﬁned by user features (e.g., user’s past history, behavior and responses, plus static user
+attributes). This also makes the comparison with the baseline fair.
+The full training algorithm used in our live experiment is shown in Algorithm 1. The
+model is trained using TensorFlow in a distributed training setup [Abadi et al., 2015] using
+stochastic gradient descent. We train on-policy over pairs of consecutive start page visits,
+with LTV labels computed using Eq. 19, and use top- koptimization for serving—i.e., we
+test SARSA-TS. The existing myopic recommender system (baseline) also builds slates
+greedily—i.e., MYOP-TS.
+We note that at serving time, we don’t just choose the slate using the top- kmethod, we
+alsoorder the slate presented to the user according to the item scores v(s;i)Q(s;i)for each
+itemi(at states). The reason for this is twofold. First, we expect that the user experience is
+positively impacted by placing more appealing items, that are likely to induce longer-term
+engagement, earlier in the slate. Second, the scrolling nature of the interface means that the
+28Algorithm 1 On-policy S LATE Q for Live Experiments
+1:Parameters:
+•T: the number of iterations.
+•M: the interval to update label network.
+•: discount rate.
+•main : the parameter for the main neural network.
+•Qmain : that predicts items’ long-term value.
+•label: the parameter for the label neural network Qlabel.
+•pctr: the parameter for the neural network that predicts items’ pCTR.
+2:Input:Dtraining = (s;A;C;L myopic;s0;A0): the training data set.
+•s: current state features
+•A= (a1;:::;ak): recommended slate of items in current state; aidenotes item
+features
+•C= (c1;:::;ck):cidenotes whether item aiis clicked
+•Lmyopic = (l1
+myopic;:::;lk
+myopic ): myopic (immediate) labels
+•s0: next state features
+•A0= (a0
+1;:::;a0
+k): recommended slate of items in next state.
+3:Output: Trained Q-network Qmain that predicts items’ long-term value.
+4:Initialization label= 0,main randomly,pctrrandomly
+5:fori= 1:::T do
+6: ifimodM= 0then
+7:label main
+8: end if
+9: foreach example (s;A;C;L myopic;s0;A0)2Dtraining do
+10: foreach itemai2Ado
+11: updatepctrusing click label ci
+12: ifaiis clicked then
+13: probability: pCTR (s0;a0
+i;A0) pCTR (s0;a0
+i)=P
+a0
+i2Apctr(s0;a0
+i)
+14: LTV label:li
+ltv li
+myopic +P
+a0
+i2A0pCTR (s0;a0
+i;A0)Qlabel(s0;a0
+i)
+15: updatemain using LTV label li
+ltv
+16: end if
+17: end for
+18: end for
+19:end for
+29day 1
+day 3
+day 5
+day 7
+day 9
+day 11
+day 13
+day 15
+day 17
+day 19
+day 21
+0.20.40.60.81.01.2% change in aggregated user engagement relative to control Figure 2: Increase in user engagement over the baseline. Data points are statistically signiﬁ-
+cant and within 95% conﬁdence intervals.
+slate sizekis not ﬁxed at serving time—the number of inspected items varies per user-event
+(see discussion in Section 5.4).
+We experimented with live trafﬁc for three weeks, treating a small, but statistically
+signiﬁcant, fraction of users to recommendations generated by our SARSA-TS LTV model.
+The control is a highly-optimized production machine learning model that optimizes for
+immediate engagement (MYOP-TS). Fig. 2 shows the percentage increase in aggregate
+user engagement using LTV over the course of the experiment relative to the control, and
+indicates that our model outperformed the baseline on the key metric under consideration,
+consistently and signiﬁcantly. Speciﬁcally, users presented recommendations by our model
+had sessions with greater engagement time relative to baseline.
+Fig. 3 shows the change in distribution of cumulative engagement originating from items
+at different positions in the slate. Recall that the number of items viewed in any user-event
+varies, i.e., experienced slates are of variable size and we show the ﬁrst ten positions in the
+ﬁgure. The results show that the users under treatment have more engaging sessions (larger
+LTVs) from items ranked higher in the slate compared to users in the control group, which
+suggests that top- kslate optimization performs reasonably in this domain.14
+10 Conclusion
+In this work, we addressed the problem of optimizing long-term user engagement in slate-
+based recommender systems using reinforcement learning. Two key impediments to the
+use of RL in large-scale, practical recommenders are (a) handling the combinatorics of
+slate-based action spaces; and (b) constructing the underlying representations.
+14The apparent increase in expected engagement at position 10 is a statistical artifact due to the small number
+of events at that position: the number of observed events at each position decreases roughly exponentially, and
+position 10 has roughly two orders of magnitude fewer observed events than any of the ﬁrst three positions.
+30Figure 3: Percentage change in long-term user engagement vs. control ( y-axis) across
+positions in the slate ( x-axis). Top 3 positions account for approximately 95% of engagement.
+To handle the ﬁrst, we developed SLATE Q, a novel decomposition technique for slate-
+based RL that allows for effective TD and Q-learning using LTV estimates for individual
+items. It requires relatively innocuous assumptions about user choice behavior and system
+dynamics, appropriate for many recommender settings. The decomposition allows for ef-
+fective TD and Q-learning by reducing the complexity of generalization and exploration to
+that of learning for individual items—a problem routinely addressed by practical myopic
+recommenders. Moreover, for certain important classes of choice models, including the con-
+ditional logit, the slate optimization problem can be solved tractably using optimal LP-based
+and heuristic greedy and top- kmethods. Our results show that SLATE Qis relatively robust
+in simulation, and can scale to large-scale commercial recommender systems like YouTube.
+Our second contribution was a practical methodology for the introduction of RL to
+extant, myopic recommenders. We proposed the use of existing myopic models to bootstrap
+the development of Q-function-based RL methods, in a way that allows the substantial
+reuse of current training and serving infrastructure. Our live experiment in YouTube rec-
+ommendation exempliﬁed the utility of this methodology and the scalability of SLATE Q. It
+also demonstrated that using LTV estimation can improve user engagement signiﬁcantly in
+practice.
+There are a variety of future research directions that can extend the work here. First, our
+methodology can be extended by relaxing some of the assumptions we made regarding the
+interaction between user choice and system dynamics. For instance, we are interested in
+models that allow unconsumed items on the slate to inﬂuence user latent state and choice
+models that allow for multiple items on a slate to be used/clicked. Further analysis of, and
+the development of corresponding optimization procedures for, additional choice models
+using SLATE Qremains of intense interest (e.g., hierarchical model such as nest logit). In a
+related vein, methods for simultaneous learning of choice models, or their parameters, while
+learning Q-values would be of great practical value. Finally, the simulation environment
+has the potential to serve as a platform for additional research on the application of RL to
+recommender systems. We hope to release a version of it to the research community in the
+near future.
+31Acknowledgments. Thanks to Larry Lansing for system optimization and the IJCAI-2019
+reviewers for helpful feedback.
+References
+Mart ´ın Abadi, Ashish Agarwal, Paul Barham, Eugene Brevdo, Zhifeng Chen, Craig Citro,
+Greg S. Corrado, Andy Davis, Jeffrey Dean, Matthieu Devin, Sanjay Ghemawat, Ian Good-
+fellow, Andrew Harp, Geoffrey Irving, Michael Isard, Yangqing Jia, Rafal Jozefowicz,
+Lukasz Kaiser, Manjunath Kudlur, Josh Levenberg, Dandelion Man ´e, Rajat Monga, Sherry
+Moore, Derek Murray, Chris Olah, Mike Schuster, Jonathon Shlens, Benoit Steiner, Ilya
+Sutskever, Kunal Talwar, Paul Tucker, Vincent Vanhoucke, Vijay Vasudevan, Fernanda
+Vi´egas, Oriol Vinyals, Pete Warden, Martin Wattenberg, Martin Wicke, Yuan Yu, and
+Xiaoqiang Zheng. TensorFlow: Large-scale machine learning on heterogeneous systems,
+2015. Software available from tensorﬂow.org.
+Qingyao Ai, Keping Bi, Jiafeng Guo, and W. Bruce Croft. Learning a deep listwise context
+model for ranking reﬁnement. In Proceedings of the 41st Annual International ACM
+Conference on Research and Development in Information Retrieval (SIGIR-18) , pages
+135–144, 2018.
+Irwan Bello, Sayali Kulkarni, Sagar Jain, Craig Boutilier, Ed Chi, Elad Eban, Xiyang Luo,
+Alan Mackey, and Ofer Meshi. Seq2slate: Re-ranking and slate optimization with rnns.
+arXiv:1810.02019 [cs.IR] , 2018.
+Dimitri P. Bertsekas and John. N. Tsitsiklis. Neuro-dynamic Programming . Athena, Belmont,
+MA, 1996.
+Craig Boutilier, Richard S. Zemel, and Benjamin Marlin. Active collaborative ﬁltering.
+InProceedings of the Nineteenth Conference on Uncertainty in Artiﬁcial Intelligence
+(UAI-03) , pages 98–106, Acapulco, 2003.
+Craig Boutilier, Alon Cohen, Avinatan Hassidim, Yishay Mansour, Ofer Meshi, Martin
+Mladenov, and Dale Schuurmans. Planning and learning with stochastic action sets. In
+Proceedings of the Twenty-seventh International Joint Conference on Artiﬁcial Intelligence
+(IJCAI-18) , pages 4674–4682, Stockholm, 2018.
+Jack S. Breese, David Heckerman, and Carl Kadie. Empirical analysis of predictive al-
+gorithms for collaborative ﬁltering. In Proceedings of the Fourteenth Conference on
+Uncertainty in Artiﬁcial Intelligence (UAI-98) , pages 43–52, Madison, WI, 1998.
+Niv Buchbinder, Moran Feldman, Joseph Sefﬁ Naor, and Roy Schwartz. Submodular
+maximization with cardinality constraints. In Proceedings of the Twenty-ﬁfth Annual
+ACM-SIAM Symposium on Discrete Algorithms (SODA-14) , pages 1433–1452, 2014.
+32Pedro G. Campos, Fernando D ´ıez, and Iv ´an Cantador. Time-aware recommender systems: A
+comprehensive survey and analysis of existing evaluation protocols. User Modeling and
+User-Adapted Interaction , 24(1–2):67–119, 2014.
+Pablo Samuel Castro, Subhodeep Moitra, Carles Gelada, Saurabh Kumar, and Marc G.
+Bellemare. Dopamine: A research framework for deep reinforcement learning.
+arXiv:1812.06110 [cs.LG] , 2018.
+Abraham Charnes and William W. Cooper. Programming with linear fractional functionals.
+Naval Research Logistics Quarterly , 9(3-4):181–186, 1962.
+Kyle D. Chen and Warren H. Hausman. Mathematical properties of the optimal product
+line selection problem using choice-based conjoint analysis. Management Science , 46(2):
+327–332, 2000.
+Minmin Chen, Alex Beutel, Paul Covington, Sagar Jain, Francois Belletti, and Ed Chi. Top-k
+off-policy correction for a REINFORCE recommender system. In 12th ACM International
+Conference on Web Search and Data Mining (WSDM-19) , pages 456–464, Melbourne,
+Australia, 2018.
+Heng-Tze Cheng, Levent Koc, Jeremiah Harmsen, Tal Shaked, Tushar Chandra, Hrishi
+Aradhye, Glen Anderson, Greg Corrado, Wei Chai, Mustafa Ispir, Rohan Anil, Zakaria
+Haque, Lichan Hong, Vihan Jain, Xiaobing Liu, and Hemal Shah. Wide & deep learning
+for recommender systems. In Proceedings of the 1st Workshop on Deep Learning for
+Recommender Systems , pages 7–10, Boston, 2016.
+Sungwoon Choi, Heonseok Ha, Uiwon Hwang, Chanju Kim, Jung-Woo Ha, and Sungroh
+Yoon. Reinforcement learning-based recommender system using biclustering technique.
+arXiv:1801.05532 [cs.IR] , 2018.
+Paul Covington, Jay Adams, and Emre Sargin. Deep neural networks for YouTube rec-
+ommendations. In Proceedings of the 10th ACM Conference on Recommender Systems ,
+pages 191–198, Boston, 2016.
+Nick Craswell, Onno Zoeter, Michael Taylor, and Bill Ramsey. An experimental comparison
+of click position-bias models. In Proceedings of the 2008 International Conference on
+Web Search and Data Mining (WSDM-08) , pages 87–94. ACM, 2008.
+Peter Dayan. The convergence of TD( ) for general .Machine Learning , 8:341–362, 1992.
+Mukund Deshpande and George Karypis. Item-based top-n recommendation algorithms.
+ACM Transactions on Information Systems (TOIS) , 22(1):143–177, 2004.
+Uriel Feige. A threshold of ln(n) for approximating set cover. Journal of the ACM , 45(4):
+634–652, 1998.
+33Jason Gauci, Edoardo Conti, Yitao Liang, Kittipat Virochsiri, Yuchen He, Zachary Kaden,
+Vivek Narayanan, and Xiaohui Ye. Horizon: Facebook’s open source applied reinforce-
+ment learning platform. arXiv:1811.00260 [cs.LG] , 2018.
+Carlos A. Gomez-Uribe and Neil Hunt. The Netﬂix recommender system: Algorithms,
+business value, and innovation. ACM Transactions on Management Information Systems ,
+6(4):13:1–13:19, 2016.
+Assaf Hallak, Yishay Mansour, and Elad Yom-Tov. Automatic representation for lifetime
+value recommender systems. arXiv:1702.07125 [stat.ML] , 2017.
+Ruining He and Julian McAuley. Fusing similarity models with Markov chains for sparse
+sequential recommendation. In Proceedings of the IEEE International Conference on
+Data Mining (ICDM-16) , Barcelona, 2016.
+Dorothee Honhon, Sreelata Jonnalagedda, and Xiajun Amy Pan. Optimal algorithms for
+assortment selection under ranking-based consumer choice models. Manufacturing and
+Service Operations Management , 14(2):279–289, 2012. doi: 10.1287/msom.1110.0365.
+URL http://pubsonline.informs.org/doi/abs/10.1287/msom.1110.0365.
+Eugene Ie, Vihan Jain, Jing Wang, Sanmit Narvekar, Ritesh Agarwal, Rui Wu, Heng-Tze
+Cheng, Tushar Chandra, and Craig Boutilier. SlateQ: A tractable decomposition for
+reinforcement learning with recommendation sets. In Proceedings of the Twenty-eighth
+International Joint Conference on Artiﬁcial Intelligence (IJCAI-19) , Macau, 2019. To
+appear.
+Kurt Jacobson, Vidhya Murali, Edward Newett, Brian Whitman, and Romain Yon. Music
+personalization at Spotify. In Proceedings of the 10th ACM Conference on Recommender
+Systems (RecSys16) , pages 373–373, Boston, Massachusetts, USA, 2016.
+Ray Jiang, Sven Gowal, Timothy A. Mann, and Danilo J. Rezende. Beyond greedy ranking:
+Slate optimization via List-CV AE. In Proceedings of the Seventh International Conference
+on Learning Representations (ICLR-19) , New Orleans, 2019.
+Thorsten Joachims. Optimizing search engines using clickthrough data. In Proceedings of
+the Eighth ACM SIGKDD International Conference on Knowledge Discovery and Data
+Mining (KDD-02) , pages 133–142, 2002.
+Joseph A. Konstan, Bradley N. Miller, David Maltz, Jonathan L. Herlocker, Lee R. Gordon,
+and John Riedl. GroupLens: Applying collaborative ﬁltering to Usenet news. Communi-
+cations of the ACM , 40(3):77–87, 1997.
+Ralf Krestel, Peter Fankhauser, and Wolfgang Nejdl. Latent Dirichlet allocation for tag
+recommendation. In Proceedings of the 3rd ACM Conference on Recommender Systems
+(RecSys09) , pages 61–68, New York, 2009.
+34Branislav Kveton, Csaba Szepesvari, Zheng Wen, and Azin Ashkan. Cascading bandits:
+Learning to rank in the cascade model. In Proceedings of the Thirty-second International
+Conference on Machine Learning (ICML-15) , pages 767–776, 2015.
+Dung D. Le and Hady W. Lauw. Indexable Bayesian personalized ranking for efﬁcient top-k
+recommendation. In Proceedings of the ACM Conference on Information and Knowledge
+Management (CIKM-17) , pages 1389–1398, 2017.
+Tie-Yan Liu et al. Learning to rank for information retrieval. Foundations and Trends in
+Information Retrieval , 3(3):225–331, 2009.
+Jordan J. Louviere, David A. Hensher, and Joffre D. Swait. Stated Choice Methods: Analysis
+and Application . Cambridge University Press, Cambridge, 2000.
+R. Duncan Luce. Individual Choice Behavior: A Theoretical Analysis . Wiley, 1959.
+Victor Mart ´ınez-de Alb ´eniz and Guillaume Roels. Competing for shelf space. Production
+and Operations Management , 20(1):32–46, 2011. doi: 10.1111/j.1937-5956.2010.01126.x.
+URL http://dx.doi.org/10.1111/j.1937-5956.2010.01126.x.
+Daniel McFadden. Conditional logit analysis of qualitative choice behavior. In Paul
+Zarembka, editor, Frontiers in Econometrics , pages 105–142. Academic Press, 1974.
+Rishabh Mehrotra, Mounia Lalmas, Doug Kenney, Thomas Lim-Meng, and Golli Hashemian.
+Jointly leveraging intent and interaction signals to predict user satisfaction with slate
+recommendations. In 2019 World Wide Web Conference (WWW’19) , pages 1256–1267,
+San Francisco, 2019.
+Luke Metz, Julian Ibarz, Navdeep Jaitly, and James Davidson. Discrete sequential prediction
+of continuous actions for deep RL. arXiv:1705.05035 [cs.LG] , 2017.
+V olodymyr Mnih, Koray Kavukcuoglu, David Silver, Andrei A Rusu, Joel Veness, Marc G
+Bellemare, Alex Graves, Martin Riedmiller, Andreas K Fidjeland, Georg Ostrovski, et al.
+Human-level control through deep reinforcement learning. Nature , 518(7540):529–533,
+2015.
+Yashar Moshfeghi, Benjamin Piwowarski, and Joemon M. Jose. Handling data sparsity in
+collaborative ﬁltering using emotion and semantic based features. In Proceedings of the
+34th International ACM SIGIR Conference on Research and Development in Information
+Retrieval (SIGIR-11) , pages 625–634, Beijing, 2011.
+G. L. Nemhauser, L. A. Wolsey, and M. L. Fisher. An analysis of approximations for
+maximizing submodular set functions—I. Mathematical Programming , 14(1):265–294,
+1978.
+Martin L. Puterman. Markov Decision Processes: Discrete Stochastic Dynamic Program-
+ming . Wiley, New York, 1994.
+35Steffen Rendle, Christoph Freudenthaler, and Lars Schmidt-Thieme. Factorizing personalized
+Markov chains for next-basket recommendation. In Proceedings of the 19th International
+World Wide Web Conference (WWW-10) , pages 811–820, Raleigh, NC, 2010.
+Gavin A. Rummery and Mahesan Niranjan. On-line Q-learning using connectionist systems.
+Technical Report Technical Report TR166, University of Cambridge, Department of
+Engineering, Cambridge, UK, 1994.
+Paat Rusmevichientong and Huseyin Topaloglu. Robust assortment optimization in revenue
+management under the multinomial logit choice model. Operations Research , 60(4):
+865–882, 2012.
+Nachiketa Sahoo, Param Vir Singh, and Tridas Mukhopadhyay. A hidden Markov model for
+collaborative ﬁltering. Management Information Systems Quarterly , 36(4), 2012.
+Ruslan Salakhutdinov and Andriy Mnih. Probabilistic matrix factorization. In Advances
+in Neural Information Processing Systems 20 (NIPS-07) , pages 1257–1264, Vancouver,
+2007.
+Cornelia Sch ¨on. On the optimal product line selection problem with price discrimination.
+Management Science , 56(5):896–902, 2010.
+Guy Shani, David Heckerman, and Ronen I. Brafman. An MDP-based recommender system.
+Journal of Machine Learning Research , 6:1265–1295, 2005.
+David Silver, Aja Huang, Chris J Maddison, Arthur Guez, Laurent Sifre, George Van
+Den Driessche, Julian Schrittwieser, Ioannis Antonoglou, Veda Panneershelvam, Marc
+Lanctot, et al. Mastering the game of Go with deep neural networks and tree search.
+Nature , 529(7587):484–489, 2016.
+Satinder Singh, Tommi Jaakkola, Michael L. Littman, and Csaba Szepesv ´ari. Convergence
+results for single-step on-policy reinforcement learning algorithms. Machine Learning ,
+38(3):287–308, 2000.
+Nathan Srebro, Jason Rennie, and Tommi Jaakkola. Maximum margin matrix factorization.
+InAdvances in Neural Information Processing Systems 17 (NIPS-2004) , pages 1329–1336,
+Vancouver, 2004.
+Peter Sunehag, Richard Evans, Gabriel Dulac-Arnold, Yori Zwols, Daniel Visentin, and Ben
+Coppin. Deep reinforcement learning with attention for slate Markov decision processes
+with high-dimensional states and actions. arXiv:1512.01124 [cs.AI] , 2015.
+Richard S. Sutton. Learning to predict by the method of temporal differences. Machine
+Learning , 3:9–44, 1988.
+Richard S. Sutton. Generalization in reinforcement learning: Successful examples using
+sparse coarse coding. In Advances in Neural Information Processing Systems 9 (NIPS-96) ,
+pages 1038–1044, 1996.
+36Richard S. Sutton and Andrew G. Barto. Reinforcement Learning: An Introduction . MIT
+Press, Cambridge, MA, 1998.
+Adith Swaminathan, Akshay Krishnamurthy, Alekh Agarwal, Miro Dudik, John Langford,
+Damien Jose, and Imed Zitouni. Off-policy evaluation for slate recommendation. In
+Advances in Neural Information Processing Systems 30 (NIPS-17) , pages 3632–3642,
+Long Beach, CA, 2017.
+Nima Taghipour, Ahmad Kardan, and Saeed Shiry Ghidary. Usage-based web recommenda-
+tions: A reinforcement learning approach. In Proceedings of the First ACM Conference
+on Recommender Systems (RecSys07) , pages 113–120, Minneapolis, 2007. ACM.
+Kalyan Talluri and Garrett van Ryzin. Revenue management under a general discrete choice
+model of consumer behavior. Management Science , 50(1):15–33, 2004.
+Yong Kiam Tan, Xinxing Xu, and Yong Liu. Improved recurrent neural networks for session-
+based recommendations. In Proceedings of the 1st Workshop on Deep Learning for
+Recommender Systems , pages 17–22, Boston, 2016.
+Georgios Theocharous, Philip S. Thomas, and Mohammad Ghavamzadeh. Personalized ad
+recommendation systems for life-time value optimization with guarantees. In Proceedings
+of the Twenty-fourth International Joint Conference on Artiﬁcial Intelligence (IJCAI-15) ,
+pages 1806–1812, Buenos Aires, 2015.
+Kenneth E. Train. Discrete Choice Methods with Simulation . Cambridge University Press,
+Cambridge, 2009.
+Aaron van den Oord, Sander Dieleman, and Benjamin Schrauwen. Deep content-based music
+recommendation. In Advances in Neural Information Processing Systems 26 (NIPS-13) ,
+pages 2643–2651, Lake Tahoe, NV , 2013.
+Harm Van Seijen, Hado Van Hasselt, Shimon Whiteson, and Marco Wiering. A theoretical
+and empirical analysis of expected SARSA. In IEEE Symposium on Adaptive Dynamic
+Programming and Reinforcement Learning , pages 177–184, 2009.
+Paolo Viappiani and Craig Boutilier. Optimal Bayesian recommendation sets and myopically
+optimal choice query sets. In Advances in Neural Information Processing Systems 23
+(NIPS) , pages 2352–2360, Vancouver, 2010.
+Hao Wang, Naiyan Wang, and Dit-Yan Yeung. Collaborative deep learning for recommender
+systems. In Proceedings of the Twenty-ﬁrst ACM International Conference on Knowledge
+Discovery and Data Mining (KDD-15) , pages 1235–1244, Sydney, 2015.
+Christopher J. C. H. Watkins and Peter Dayan. Q-learning. Machine Learning , 8:279–292,
+1992.
+37Mark Wilhelm, Ajith Ramanathan, Alexander Bonomo, Sagar Jain, Ed H. Chi, and Jennifer
+Gillenwater. Practical diversiﬁed recommendations on YouTube with determinantal point
+processes. In Proceedings of the 27th ACM International Conference on Information and
+Knowledge Management (CIKM18) , pages 2165–2173, Torino, Italy, 2018.
+Chao-Yuan Wu, Amr Ahmed, Alex Beutel, Alexander J. Smola, and How Jing. Recurrent
+recommender networks. In Proceedings of the Tenth ACM International Conference on
+Web Search and Data Mining (WSDM-17) , pages 495–503, Cambridge, UK, 2017.
+Yu Zhang and Qiang Yang. A survey on multi-task learning. arXiv:1707.08114
+[cs.LG] , 2017.
+Xiangyu Zhao, Long Xia, Liang Zhang, Zhuoye Ding, Dawei Yin, and Jiliang Tang. Deep
+reinforcement learning for page-wise recommendations. In Proceedings of the 12th ACM
+Conference on Recommender Systems (RecSys-18) , pages 95–103, Vancouver, 2018.
+38
