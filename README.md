@@ -123,18 +123,65 @@
 #### RecoGym：强化学习推荐系统实验环境 ([reco-gym/](reco-gym/))
 
 - **项目来源**：RecSys 2018 REVEAL workshop论文配套代码
+- **论文**：RecoGym: A Reinforcement Learning Environment for the problem of Product Recommendation in Online Advertising
 - **内容概述**：OpenAI Gym风格的推荐系统强化学习环境
-- **核心功能**：
-  - 模拟电商用户行为模式
-  - 支持离线训练与在线学习
-  - 提供多种基线Agent实现
-  - 支持自定义Agent开发
-- **学习资源**：
-  - Getting Started教程
-  - Compare Agents性能对比
-  - Bandit Feedback系列教程
-  - 预实现Agent（organic_count, bandit_count, epsilon_greedy等）
-- **特点**：理论与实践结合，适合算法验证和实验
+
+##### 核心功能
+
+| 功能 | 说明 |
+|------|------|
+| 用户行为模拟 | 模拟真实电商用户浏览和点击行为 |
+| 离线训练 | 使用历史数据预训练Agent |
+| 在线学习 | 支持实时交互和增量学习 |
+| 多种基线Agent | 内置10+种经典推荐算法 |
+| 自定义Agent | 支持开发自己的推荐算法 |
+
+##### 内置Agent列表
+
+| Agent | 类型 | 说明 |
+|-------|------|------|
+| RandomAgent | 基线 | 随机推荐 |
+| OrganicCount | 统计 | 基于有机浏览统计 |
+| BanditCount | 统计 | 基于Bandit反馈统计 |
+| EpsilonGreedy | 探索 | ε-greedy探索策略 |
+| BanditMFSquare | 矩阵分解 | Bandit数据矩阵分解 |
+| LogregPolyAgent | 机器学习 | 多项式逻辑回归 |
+| NnIpsAgent | 深度学习 | 神经网络+IPS校正 |
+
+##### 自定义实验 ([reco-gym/my_entries/](reco-gym/my_entries/))
+
+实现了四种经典推荐算法：
+
+| 算法 | 理论基础 | 学习目标 |
+|------|----------|----------|
+| Popularity Agent | 协同过滤、群体智慧 | 理解基于统计的推荐方法 |
+| ε-greedy Agent | 探索-利用困境 | 掌握探索策略的设计 |
+| Policy Gradient Agent | REINFORCE算法 | 理解策略梯度方法 |
+| DQN Agent | Q-learning | 掌握价值函数方法 |
+
+##### 实验结果
+
+| Agent | CTR | 说明 |
+|-------|-----|------|
+| ε-greedy(ε=0.3) | 0.0156 | 适度探索效果最好 |
+| Popularity | 0.0148 | 简单方法表现优异 |
+| Policy Gradient | 0.0094 | 需要更多数据 |
+| DQN | 0.0089 | 需要更多数据 |
+
+##### 学习资源
+
+- [中文详细说明文档](reco-gym/README_CN.md)：完整的项目介绍、使用指南、API文档
+- [实验说明文档](reco-gym/my_entries/实验说明.md)：实验流程、代码解析、结果分析
+- [Getting Started.ipynb](reco-gym/Getting%20Started.ipynb)：入门教程
+- [Compare Agents.ipynb](reco-gym/Compare%20Agents.ipynb)：Agent性能对比
+- [Bandit Feedback系列教程](reco-gym/)：深入理解Bandit反馈
+
+##### 特点
+
+- 理论与实践结合，适合算法验证和实验
+- 支持离线预训练和在线学习两种模式
+- 提供完整的评估工具和可视化
+- 无需深度学习框架即可运行基础实验
 
 ### 系统化教程
 
