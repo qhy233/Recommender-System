@@ -21,8 +21,12 @@ bayesian_poly_args = {
     'with_ps_all': False,
 }
 
-from scipy import rand
+from numpy.random import rand as np_rand
 from numpy.linalg import inv
+
+
+def rand(n):
+    return np_rand(n)
 
 
 # Algorithm 6
