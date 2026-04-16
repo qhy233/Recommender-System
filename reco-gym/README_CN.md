@@ -345,7 +345,7 @@ class MyAgent(Agent):
     def train(self, observation, action, reward, done=False):
         """
         训练方法：根据观察、动作、奖励更新模型
-      
+    
         参数:
             observation: 观察数据，包含用户浏览会话
             action: Agent执行的动作
@@ -361,7 +361,7 @@ class MyAgent(Agent):
     def act(self, observation, reward, done):
         """
         决策方法：根据观察选择推荐动作
-      
+    
         返回:
             dict: 包含动作信息的字典
                 - 't': 时间戳
@@ -372,7 +372,7 @@ class MyAgent(Agent):
         """
         # 决策逻辑
         action_id = self._choose_action(observation)
-      
+    
         return {
             't': observation.context().time(),
             'u': observation.context().user(),
@@ -411,7 +411,7 @@ class PopularityAgent(Agent):
             action = np.random.randint(self.config.num_products)
         else:
             action = np.argmax(self.product_views)
-      
+    
         return {
             't': observation.context().time(),
             'u': observation.context().user(),
